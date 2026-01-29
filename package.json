@@ -1,0 +1,38 @@
+{
+    "name": "cake-shop-telegram-bot",
+    "version": "1.0.0",
+    "description": "Cake shop Telegram bot (Sotuv, Chiqim, Qarz, Kassa yopish)",
+    "private": true,
+    "type": "commonjs",
+    "main": "src/index.js",
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "scripts": {
+        "start": "nodemon src/index.js",
+        "dev": "nodemon src/index.js",
+        "lint": "echo \"Lint yo‘q (ixtiyoriy)\"",
+        "health": "node -e \"console.log('OK')\""
+    },
+    "dependencies": {
+        "dayjs": "^1.11.19",
+        "dotenv": "^16.4.5",
+        "ioredis": "^5.4.1",
+        "mongoose": "^8.6.1",
+        "node-telegram-bot-api": "^0.66.0"
+    },
+    "devDependencies": {
+        "nodemon": "^3.0.3"
+    },
+    "keywords": [
+        "telegram-bot",
+        "cake-shop",
+        "pos",
+        "sales",
+        "mongodb",
+        "redis",
+        "nodejs"
+    ],
+    "author": "Azimjon",
+    "license": "UNLICENSED"
+}

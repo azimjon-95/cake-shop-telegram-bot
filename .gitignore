@@ -1,0 +1,38 @@
+# ===== Node.js =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== Environment =====
+.env
+.env.*
+!.env.example
+
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ===== Build / Cache / Coverage =====
+dist/
+build/
+.cache/
+coverage/
+*.tsbuildinfo
+
+# ===== Runtime files =====
+reports/
+*.log
+
+# ===== Optional: Docker (agar ishlatsangiz) =====
+docker-data/
+mongo-data/
+redis-data/
+
+# ===== Optional: lock files (xohlasangiz gitga qo‘shasiz) =====
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
