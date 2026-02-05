@@ -2,6 +2,7 @@ require("dotenv").config();
 
 module.exports = {
     BOT_TOKEN: process.env.BOT_TOKEN,
+    CHANNEL_ID: String(process.env.CHANNEL_ID || ""),
     MONGO_URI: process.env.MONGO_URI,
     REDIS_URL: process.env.REDIS_URL,
     BOT_PASSWORD: process.env.BOT_PASSWORD || "1234",

@@ -9,8 +9,8 @@
         "node": ">=18.0.0"
     },
     "scripts": {
-        "start": "nodemon src/index.js",
-        "dev": "nodemon src/index.js",
+        "dev": "nodemon -L src/index.js",
+        "start": "nodemon -L src/index.js",
         "lint": "echo \"Lint yo‘q (ixtiyoriy)\"",
         "health": "node -e \"console.log('OK')\""
     },
