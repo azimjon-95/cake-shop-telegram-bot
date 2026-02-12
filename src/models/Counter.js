@@ -1,3 +1,4 @@
+// src/models/Counter.js
 const { mongoose } = require("../db");
 
 const CounterSchema = new mongoose.Schema(

@@ -1,514 +1,722 @@
-// src/bot/handlers/onCallback.js
-// NEW CLEAN VERSION (one flow, no duplicate cases, caption/text safe edits)
-// ✅ Added: cart jump hint ("👇 Savat yangilandi") + no-duplicate hint + cart delete before sending list
+// src/handlers/onCallback.js  (FINAL + REPORT FILTERS + SAFE EDIT)
+const { GROUP_CHAT_ID } = require("../config");
 
+const Sale = require("../models/Sale");
+const Expense = require("../models/Expense");
 const Debt = require("../models/Debt");
-const Product = require("../models/Product");
 
-const { redis } = require("../services/auth");
-const cartService = require("../services/cartService");
-const { payDebt } = require("../services/debtPay");
 const { makeMonthlyReport } = require("../services/monthlyReport");
+const { payDebt } = require("../services/debtPay");
 const { sendToGroup } = require("../services/notify");
-const { handleWizardCallback } = require("../services/productWizard");
-
-const { listProducts, listByCategory, getById, listCategories } = require("../services/productService");
-
 const { debtPayNotifyText } = require("../utils/report");
+const { redis } = require("../services/auth");
+
 const { formatMoney } = require("../utils/money");
-const { escapeHtml, getUserName } = require("../helpers/text");
+const { getUserName, escapeHtml, payAmountKeyboard } = require("../logic/ui");
+const { startDeleteFlow } = require("../logic/deleteFlow");
 
-const { deleteCartMessage, tryPinCart, sendNewCartMessage } = require("../helpers/cartDock");
-const { formatCart } = require("../services/cartFormat");
-const { editSmart } = require("../helpers/tgEdit");
+// ✅ flows
+const { onExpenseCallback } = require("./expenseFlow");
+const { onPurchaseCallback } = require("./purchaseFlow");
 
-const {
-    catalogKeyboard,
-    categoryKeyboard,
-    productAddKeyboard,
-} = require("../keyboards");
+// ✅ NEW: report filters keyboard + categories
+const { reportFiltersKeyboard } = require("../keyboards");
+const { EXPENSE_CATEGORIES } = require("../utils/expenseCategories");
 
-const { CHANNEL_ID } = require("../config");
-
-/* ================= helpers ================= */
-
-function payAmountKeyboard(debtId) {
-    return {
-        inline_keyboard: [
-            [{ text: "To'liq to'lash", callback_data: `payfull:${debtId}` }],
-            [{ text: "Qisman to'lash", callback_data: `paypart:${debtId}` }],
-        ],
-    };
+// ===================== HELPERS =====================
+function getSeller(from) {
+    return { tgId: from.id, tgName: getUserName({ from }) };
 }
 
-function productCard(p) {
-    const title = `🍰 <b>${escapeHtml(p.name)}</b>`;
-    const cat = `📁 ${escapeHtml(p.category)}`;
-    const price = `💰 ${formatMoney(p.salePrice)} so'm`;
-    const qty = `📦 ${p.qty} ta`;
-    const code = p.code ? `🧾 <b>${escapeHtml(p.code)}</b>` : "";
-    const desc = p.desc ? `📝 ${escapeHtml(p.desc)}` : "";
-    return [code, title, cat, price, qty, desc].filter(Boolean).join("\n");
-}
-
-// ✅ cart keyboard: har itemga ➖ qty ➕
-function cartKeyboard(items) {
-    const rows = [];
-    for (const it of items) {
-        const pid = String(it.product._id);
-        rows.push([
-            { text: "➖", callback_data: `cart:dec:${pid}` },
-            { text: `${it.qty}x`, callback_data: "noop" },
-            { text: "➕", callback_data: `cart:inc:${pid}` },
-        ]);
-    }
-    rows.push([{ text: "➕ Davom etish", callback_data: "back_to_cat" }]);
-    rows.push([{ text: "✅ Sotish", callback_data: "sell" }]);
-    return { inline_keyboard: rows };
-}
-
-// ✅ Hint message (jump to cart) — eski hintni o'chirib turamiz
-async function sendCartJumpHint(bot, chatId, cartMessageId) {
-    const hintKey = `cart_hint:${String(chatId)}`;
-    const oldHint = await redis.get(hintKey);
-
-    if (oldHint) {
-        try { await bot.deleteMessage(chatId, Number(oldHint)); } catch { }
-        await redis.del(hintKey);
-    }
-
+async function safeAnswer(bot, q, text) {
     try {
-        const hint = await bot.sendMessage(chatId, "Savat yangilandi", {
-            reply_to_message_id: cartMessageId,
-        });
-        await redis.set(hintKey, String(hint.message_id), "EX", 3600);
-    } catch { }
-}
-
-async function showCategoriesPage(bot, q) {
-    let kb;
-    try {
-        kb = categoryKeyboard();
+        if (text) return await bot.answerCallbackQuery(q.id, { text });
+        return await bot.answerCallbackQuery(q.id);
     } catch {
-        const cats = await listCategories();
-        kb = { inline_keyboard: (cats || []).map((c) => [{ text: c, callback_data: `cat:${c}` }]) };
+        // ignore
     }
-
-    await editSmart(bot, q, {
-        text: "📂 Kategoriya tanlang:",
-        reply_markup: kb,
-    });
 }
 
-async function sendProductsList(bot, chatId, { category = null, page = 1 } = {}) {
-    const limit = 10;
-    const { items, pages } = await listProducts({
-        category: category || undefined,
-        page,
-        limit,
-    });
+function normalizePhone(phone) {
+    if (!phone) return null;
+    let p = String(phone).replace(/[^\d]/g, "");
+    if (p.length === 9) p = "998" + p;
+    return p || null;
+}
 
-    if (!items || !items.length) {
-        return bot.sendMessage(
-            chatId,
-            category ? "📦 Bu kategoriyada mahsulot yo‘q." : "📦 Mahsulotlar yo‘q."
-        );
-    }
-
-    for (const p of items) {
-        const kb = {
-            inline_keyboard: [[
-                { text: "🗑 O‘chirish", callback_data: `pdel:${p._id}` },
-                { text: "⏳ Muddati o‘tgan", callback_data: `pexp:${p._id}` },
-            ]],
-        };
-
-        if (p.photo?.tgFileId) {
-            await bot.sendPhoto(chatId, p.photo.tgFileId, {
-                caption: productCard(p),
-                parse_mode: "HTML",
-                reply_markup: kb,
-            });
-        } else {
-            await bot.sendMessage(chatId, productCard(p), {
-                parse_mode: "HTML",
-                reply_markup: kb,
-            });
-        }
-    }
-
-    const navRow = [];
-    const catKey = category ? String(category).toLowerCase() : "all";
-    if (page > 1) navRow.push({ text: "⬅️ Oldingi", callback_data: `plist:${catKey}:${page - 1}` });
-    if (page < pages) navRow.push({ text: "➡️ Keyingi", callback_data: `plist:${catKey}:${page + 1}` });
-
-    if (navRow.length) {
-        await bot.sendMessage(chatId, "📄 Sahifa:", {
-            reply_markup: { inline_keyboard: [navRow] },
+// ✅ SAFE edit (message is not modified bo'lsa error chiqarmaydi)
+async function editMsgSafe(bot, q, text, reply_markup) {
+    try {
+        return await bot.editMessageText(text, {
+            chat_id: q.message.chat.id,
+            message_id: q.message.message_id,
+            parse_mode: "HTML",
+            reply_markup
         });
+    } catch (e) {
+        const msg = String(e?.message || "");
+        if (msg.includes("message is not modified")) return null; // ✅ jim
+        throw e;
     }
 }
 
-/* ================= main ================= */
+// ===================== REPORT FILTER STATE =====================
+const REP_KEY = (userId, y, m) => `rep_filter:${userId}:${y}:${m}`;
 
+function allExpenseKeys() {
+    return EXPENSE_CATEGORIES.map(x => x.key);
+}
+
+async function getSelectedExpenseKeys(userId, year, monthIndex) {
+    const raw = await redis.get(REP_KEY(userId, year, monthIndex));
+    if (!raw) return allExpenseKeys(); // ✅ default ALL
+    try {
+        const arr = JSON.parse(raw);
+        // ✅ [] ham bo'lishi mumkin (Clear = none qilmoqchi bo'lsangiz)
+        if (Array.isArray(arr)) return arr.length ? arr : allExpenseKeys();
+        return allExpenseKeys();
+    } catch {
+        return allExpenseKeys();
+    }
+}
+
+async function setSelectedExpenseKeys(userId, year, monthIndex, keys) {
+    const arr = Array.isArray(keys) ? keys : allExpenseKeys();
+    await redis.set(REP_KEY(userId, year, monthIndex), JSON.stringify(arr), "EX", 60 * 60);
+}
+
+// ===================== DEBT (CUSTOMER) =====================
+async function handleDebtPayAsk(bot, q, chatId) {
+    const debtId = q.data.split(":")[1];
+    const debt = await Debt.findById(debtId);
+
+    if (!debt) {
+        await safeAnswer(bot, q, "Qarz topilmadi");
+        return true;
+    }
+
+    if (debt.kind && debt.kind !== "customer") {
+        await safeAnswer(bot, q, "Bu bo‘lim faqat mijoz qarzi uchun");
+        return true;
+    }
+
+    await bot.sendMessage(
+        chatId,
+        `📌 Qarz: <b>${escapeHtml(debt.note || "-")}</b>\n` +
+        `Qolgan: <b>${formatMoney(debt.remainingDebt)}</b> so'm\n` +
+        `Qanday to'laysiz?`,
+        { parse_mode: "HTML", ...payAmountKeyboard(debtId) }
+    );
+
+    return true;
+}
+
+async function handleDebtPayFull(bot, q, chatId, seller) {
+    const debtId = q.data.split(":")[1];
+    const debt = await Debt.findById(debtId);
+
+    if (!debt) {
+        await safeAnswer(bot, q, "Qarz topilmadi");
+        return true;
+    }
+
+    if (debt.kind && debt.kind !== "customer") {
+        await safeAnswer(bot, q, "Bu bo‘lim faqat mijoz qarzi uchun");
+        return true;
+    }
+
+    const { debt: updated, actualPay } = await payDebt({
+        debtId,
+        amount: debt.remainingDebt,
+        payer: seller
+    });
+
+    const notify = debtPayNotifyText({
+        payerName: seller.tgName,
+        note: escapeHtml(debt.note || "-"),
+        phone: normalizePhone(debt.customerPhone),
+        paid: actualPay,
+        remaining: updated.remainingDebt
+    });
+
+    await bot.sendMessage(
+        chatId,
+        `✅ To'landi: <b>${formatMoney(actualPay)}</b> so'm\n` +
+        `Qolgan: <b>${formatMoney(updated.remainingDebt)}</b> so'm`,
+        { parse_mode: "HTML" }
+    );
+
+    await sendToGroup(bot, notify);
+    return true;
+}
+
+async function handleDebtPayPart(bot, q, chatId, fromId) {
+    const debtId = q.data.split(":")[1];
+
+    const debt = await Debt.findById(debtId);
+    if (!debt) {
+        await safeAnswer(bot, q, "Qarz topilmadi");
+        return true;
+    }
+
+    if (debt.kind && debt.kind !== "customer") {
+        await safeAnswer(bot, q, "Bu bo‘lim faqat mijoz qarzi uchun");
+        return true;
+    }
+
+    await redis.set(`await_pay_amount:${fromId}`, debtId, "EX", 300);
+    await bot.sendMessage(chatId, "✍️ Qancha to'laysiz? (faqat summa yozing, masalan: 30000)");
+    return true;
+}
+
+// ===================== MONTH REPORT (EDIT + FILTERS) =====================
+async function editReportMessage(bot, q, rep, year, monthIndex, selectedKeys) {
+    const textMsg =
+        `📆 <b>Oylik hisobot: ${rep.monthTitle}</b>\n\n` +
+        `📦 Kirim (maxsulot keldi): <b>${formatMoney(rep.purchaseSum)}</b> so'm\n` +
+        `🧁 Sotildi (jami savdo): <b>${formatMoney(rep.soldTotal)}</b> so'm\n` +
+        `💰 Sotuvdan tushgan: <b>${formatMoney(rep.paidSum)}</b> so'm\n` +
+        `💸 Chiqimlar: <b>${formatMoney(rep.expenseSum)}</b> so'm\n\n` +
+        `👥 Bizdan qarz (mijozlar): <b>${formatMoney(rep.customerDebtSum)}</b> so'm\n` +
+        `🏭 Bizning qarz (firmalar): <b>${formatMoney(rep.supplierDebtSum)}</b> so'm\n` +
+        `🏦 Kassa balansi: <b>${formatMoney(rep.balance)}</b> so'm\n\n` +
+        `🎛 Filter (Chiqim): <b>${(selectedKeys?.length ? selectedKeys.join(", ") : "ALL")}</b>`;
+
+    const rm = reportFiltersKeyboard({ year, monthIndex, selectedKeys });
+    await editMsgSafe(bot, q, textMsg, rm); // ✅ safe edit
+}
+
+async function handleMonthReport(bot, q, chatId, userId) {
+    const [, y, m] = q.data.split(":");
+    const year = parseInt(y, 10);
+    const monthIndex = parseInt(m, 10);
+
+    // ✅ loading (oy bosilganda)
+    await safeAnswer(bot, q, "⏳ Hisobot tayyorlanmoqda...");
+
+    const selectedKeys = await getSelectedExpenseKeys(userId, year, monthIndex);
+
+    const rep = await makeMonthlyReport(year, monthIndex, { expenseCategories: selectedKeys });
+
+    await editReportMessage(bot, q, rep, year, monthIndex, selectedKeys);
+
+    // txt file alohida yuboramiz
+    await bot.sendDocument(chatId, rep.filePath, { caption: `📄 Batafsil oylik hisobot: ${rep.fileName}` });
+
+    if (GROUP_CHAT_ID) {
+        await bot.sendDocument(GROUP_CHAT_ID, rep.filePath, { caption: `📄 Oylik hisobot (${rep.monthTitle})` });
+    }
+
+    return true;
+}
+
+// ✅ filter toggle
+async function handleReportFilterToggle(bot, q, userId) {
+    const [, y, m, key] = q.data.split(":");
+    const year = parseInt(y, 10);
+    const monthIndex = parseInt(m, 10);
+
+    await safeAnswer(bot, q, "⏳ Yangilanmoqda...");
+
+    const allKeys = allExpenseKeys();
+    const current = await getSelectedExpenseKeys(userId, year, monthIndex);
+
+    const set = new Set(current);
+    if (set.has(key)) set.delete(key);
+    else set.add(key);
+
+    // ✅ hech narsa qolmasa ALLga qaytaramiz
+    const nextKeys = set.size ? Array.from(set) : allKeys;
+
+    // ✅ o'zgarmagan bo'lsa edit qilmaymiz
+    const same = current.length === nextKeys.length && nextKeys.every(k => current.includes(k));
+    if (same) {
+        await safeAnswer(bot, q, "✅");
+        return true;
+    }
+
+    await setSelectedExpenseKeys(userId, year, monthIndex, nextKeys);
+
+    const rep = await makeMonthlyReport(year, monthIndex, { expenseCategories: nextKeys });
+    await editReportMessage(bot, q, rep, year, monthIndex, nextKeys);
+
+    return true;
+}
+
+// ✅ filter all
+async function handleReportFilterAll(bot, q, userId) {
+    const [, y, m] = q.data.split(":");
+    const year = parseInt(y, 10);
+    const monthIndex = parseInt(m, 10);
+
+    await safeAnswer(bot, q, "⏳ All...");
+
+    const allKeys = allExpenseKeys();
+    const current = await getSelectedExpenseKeys(userId, year, monthIndex);
+
+    const same = current.length === allKeys.length && allKeys.every(k => current.includes(k));
+    if (same) {
+        await safeAnswer(bot, q, "✅ All tanlangan");
+        return true;
+    }
+
+    await setSelectedExpenseKeys(userId, year, monthIndex, allKeys);
+
+    const rep = await makeMonthlyReport(year, monthIndex, { expenseCategories: allKeys });
+    await editReportMessage(bot, q, rep, year, monthIndex, allKeys);
+
+    return true;
+}
+
+// ✅ filter clear (siz hozircha Clear = ALL deb xohlagansiz)
+async function handleReportFilterNone(bot, q, userId) {
+    const [, y, m] = q.data.split(":");
+    const year = parseInt(y, 10);
+    const monthIndex = parseInt(m, 10);
+
+    await safeAnswer(bot, q, "⏳ Clear...");
+
+    const allKeys = allExpenseKeys();
+    const current = await getSelectedExpenseKeys(userId, year, monthIndex);
+
+    // Clear = ALL bo'lsa va all bo'lib turgan bo'lsa -> edit qilmaymiz
+    const same = current.length === allKeys.length && allKeys.every(k => current.includes(k));
+    if (same) {
+        await safeAnswer(bot, q, "🧹 Clear (All)");
+        return true;
+    }
+
+    await setSelectedExpenseKeys(userId, year, monthIndex, allKeys);
+
+    const rep = await makeMonthlyReport(year, monthIndex, { expenseCategories: allKeys });
+    await editReportMessage(bot, q, rep, year, monthIndex, allKeys);
+
+    return true;
+}
+
+// ✅ refresh
+async function handleReportRefresh(bot, q, userId) {
+    const [, y, m] = q.data.split(":");
+    const year = parseInt(y, 10);
+    const monthIndex = parseInt(m, 10);
+
+    await safeAnswer(bot, q, "🔄 Yangilanmoqda...");
+
+    const keys = await getSelectedExpenseKeys(userId, year, monthIndex);
+    const rep = await makeMonthlyReport(year, monthIndex, { expenseCategories: keys });
+    await editReportMessage(bot, q, rep, year, monthIndex, keys);
+
+    return true;
+}
+
+// ===================== MAIN CALLBACK =====================
 async function onCallback(bot, q) {
     const msg = q.message;
-    const chatId = msg?.chat?.id;
+    const chatId = msg.chat.id;
     const from = q.from;
-
-    const seller = { tgId: from.id, tgName: getUserName({ from }) };
-
-    await bot.answerCallbackQuery(q.id).catch(() => { });
+    const data = q.data || "";
+    const seller = getSeller(from);
+    // ✅ SPINNERNI DARROV O‘CHIRADI
+    try { await bot.answerCallbackQuery(q.id); } catch { }
 
     try {
-        // 1) WIZARD CALLBACK FIRST
-        const wizardHandled = await handleWizardCallback({
-            bot,
-            redis,
-            q,
-            userId: from.id,
-            chatId,
-            channelId: CHANNEL_ID,
-            getUserName,
-            catalogKeyboard,
-        });
-        if (wizardHandled) return;
-
-        const data = q.data || "";
-
-        /* ================= PRODUCTS: pagination ================= */
-        if (data.startsWith("plist:")) {
-            const [, catKey, pageStr] = data.split(":");
-            const page = Math.max(1, parseInt(pageStr, 10) || 1);
-            const category = catKey === "all" ? null : catKey;
-
-            await sendProductsList(bot, chatId, { category, page });
-            return;
-        }
-
-        /* ================= PRODUCT ADMIN: delete/expired start ================= */
-        if (data.startsWith("pdel:") || data.startsWith("pexp:")) {
-            const [actionKey, id] = data.split(":");
-            const action = actionKey === "pexp" ? "expired" : "delete";
-
-            await redis.set(
-                `prod_del_pending:${from.id}`,
-                JSON.stringify({ action, productId: id }),
-                "EX",
-                600
-            );
-
-            await bot.sendMessage(
-                chatId,
-                action === "expired"
-                    ? "✍️ Muddati o‘tgan sababi? (matn yozing)"
-                    : "✍️ O‘chirish sababi? (matn yozing)"
-            );
-            return;
-        }
-
-        /* ================= debt pay ================= */
-        if (data.startsWith("pay:")) {
-            const debtId = data.split(":")[1];
-            const debt = await Debt.findById(debtId);
-            if (!debt) {
-                await bot.answerCallbackQuery(q.id, { text: "Qarz topilmadi" }).catch(() => { });
-                return;
-            }
-
-            await bot.sendMessage(
-                chatId,
-                `📌 Qarz: <b>${escapeHtml(debt.note || "-")}</b>\nQolgan: <b>${formatMoney(debt.remainingDebt)}</b> so'm\nQanday to'laysiz?`,
-                { parse_mode: "HTML", reply_markup: payAmountKeyboard(debtId) }
-            );
-            return;
-        }
-
-        if (data.startsWith("payfull:")) {
-            const debtId = data.split(":")[1];
-            const debt = await Debt.findById(debtId);
-            if (!debt) {
-                await bot.answerCallbackQuery(q.id, { text: "Qarz topilmadi" }).catch(() => { });
-                return;
-            }
-
-            const { debt: updated, actualPay } = await payDebt({
-                debtId,
-                amount: debt.remainingDebt,
-                payer: seller,
-            });
-
-            const notify = debtPayNotifyText({
-                payerName: seller.tgName,
-                note: debt.note || "-",
-                phone: debt.customerPhone ? String(debt.customerPhone).replace(/[^\d]/g, "") : null,
-                paid: actualPay,
-                remaining: updated.remainingDebt,
-            });
-
-            await bot.sendMessage(
-                chatId,
-                `✅ To'landi: <b>${formatMoney(actualPay)}</b> so'm\nQolgan: <b>${formatMoney(updated.remainingDebt)}</b> so'm`,
-                { parse_mode: "HTML" }
-            );
-
-            await sendToGroup(bot, notify);
-            return;
-        }
-
-        if (data.startsWith("paypart:")) {
-            const debtId = data.split(":")[1];
-            await redis.set(`await_pay_amount:${from.id}`, debtId, "EX", 300);
-            await bot.sendMessage(chatId, "✍️ Qancha to'laysiz? (masalan: 30000)");
-            return;
-        }
-
-        /* ================= report month ================= */
-        if (data.startsWith("rep_month:")) {
-            const [, y, m] = data.split(":");
-            const year = parseInt(y, 10);
-            const monthIndex = parseInt(m, 10);
-
-            const rep = await makeMonthlyReport(year, monthIndex);
-
-            const textMsg =
-                `📆 <b>Oylik hisobot: ${rep.monthTitle}</b>\n\n` +
-                `💰 Sotuvdan tushgan: <b>${formatMoney(rep.saleSum)}</b> so'm\n` +
-                `💸 Chiqimlar: <b>${formatMoney(rep.expenseSum)}</b> so'm\n` +
-                `📌 Ochiq qarz (qolgan): <b>${formatMoney(rep.debtSum)}</b> so'm\n` +
-                `🏦 Kassa balansi: <b>${formatMoney(rep.balance)}</b> so'm`;
-
-            await bot.sendMessage(chatId, textMsg, { parse_mode: "HTML" });
-            await bot.sendDocument(chatId, rep.filePath, { caption: `📄 ${rep.fileName}` });
-            return;
-        }
-
-        /* ================= delete start (sale/expense) ================= */
-        if (data === "del:start") {
-            await redis.set(`del_mode:${from.id}`, "await_order", "EX", 300);
-            await bot.sendMessage(chatId, "🧾 Tartib raqamini yozing! (masalan: #0009)");
-            return;
-        }
-
-        /* ================= product info (send to private) ================= */
-        if (data.startsWith("pinfo:")) {
-            const id = data.split(":")[1];
-            const p = await Product.findById(id);
-
-            if (!p || p.isDeleted || !p.isActive) {
-                await bot.answerCallbackQuery(q.id, { text: "Mahsulot topilmadi" }).catch(() => { });
-                return;
-            }
-
-            const textMsg =
-                `🍰 <b>${escapeHtml(p.name)}</b>\n` +
-                `📁 <b>Kategoriya:</b> ${escapeHtml(p.category)}\n` +
-                `💰 <b>Narx:</b> ${formatMoney(p.salePrice)} so'm\n` +
-                (p.desc ? `📝 ${escapeHtml(p.desc)}\n` : "") +
-                (p.code ? `🧾 <b>Kod:</b> ${escapeHtml(p.code)}\n` : "") +
-                `📦 <b>Mavjud:</b> ${p.qty} ta`;
-
-            const userChatId = q.from.id;
-
-            if (p.photo?.tgFileId) {
-                await bot.sendPhoto(userChatId, p.photo.tgFileId, {
-                    caption: textMsg,
-                    parse_mode: "HTML",
-                });
-            } else {
-                await bot.sendMessage(userChatId, textMsg, { parse_mode: "HTML" });
-            }
-
-            await bot.answerCallbackQuery(q.id, { text: "✅ Lichkaga yuborildi" }).catch(() => { });
-            return;
-        }
-
-        /* ================= order ================= */
-        if (data.startsWith("order:")) {
-            const id = data.split(":")[1];
-            await bot.sendMessage(
-                q.from.id,
-                "🛒 Zakaz uchun yozing:\nMasalan:\n" +
-                `<b>#${id}</b> 2ta tel 901234567\n\n` +
-                "Yoki shunchaki telefon yuboring, admin aloqaga chiqadi.",
-                { parse_mode: "HTML" }
-            );
-            return;
-        }
-
-        /* ================= CUSTOMER FLOW: categories -> products -> cart ================= */
-
-        if (data === "back_to_cat") {
-            await showCategoriesPage(bot, q);
-            return;
-        }
-
-        // category selected
-        if (data.startsWith("cat:")) {
-            const category = data.slice(4);
-            const products = await listByCategory(category);
-
-            if (!products || !products.length) {
-                await editSmart(bot, q, {
-                    text: "❌ Bu kategoriyada mahsulot yo‘q",
-                    reply_markup: categoryKeyboard(),
-                });
-                return;
-            }
-
-            // ✅ Kategoriya/mahsulotlar chiqishidan oldin eski savatni olib tashlaymiz
-            await deleteCartMessage(bot, redis, chatId);
-
-            await editSmart(bot, q, {
-                text: `📦 <b>${escapeHtml(category)}</b> — mahsulotlar:`,
-                reply_markup: categoryKeyboard(),
-            });
-
-            for (const p of products) {
-                const caption =
-                    `🍰 <b>${escapeHtml(p.name)}</b>\n` +
-                    `💰 ${formatMoney(p.salePrice)} so‘m\n` +
-                    `📦 Qoldiq: ${p.qty}`;
-
-                if (p.photo?.tgFileId) {
-                    await bot.sendPhoto(chatId, p.photo.tgFileId, {
-                        caption,
-                        parse_mode: "HTML",
-                        reply_markup: productAddKeyboard(p._id),
-                    });
-                } else if (p.photo?.url) {
-                    await bot.sendPhoto(chatId, p.photo.url, {
-                        caption,
-                        parse_mode: "HTML",
-                        reply_markup: productAddKeyboard(p._id),
-                    });
-                } else {
-                    await bot.sendMessage(chatId, caption, {
-                        parse_mode: "HTML",
-                        reply_markup: productAddKeyboard(p._id),
-                    });
-                }
-            }
-
-            // ✅ savat bo'lsa, yana pastga chiqaramiz + hint
-            const items = cartService.listItems(chatId);
-            if (items.length) {
-                const totals = cartService.calcTotals(chatId);
-                const mid = await sendNewCartMessage(
-                    bot,
-                    redis,
-                    chatId,
-                    formatCart(items, totals),
-                    cartKeyboard(items)
-                );
-                await tryPinCart(bot, chatId, mid);
-                await sendCartJumpHint(bot, chatId, mid);
-            }
-
-            return;
-        }
-
-        // add to cart
-        if (data.startsWith("add:")) {
-            const productId = data.slice(4);
-            const product = await getById(productId);
-
-            if (!product || product.qty <= 0) {
-                await bot.answerCallbackQuery(q.id, { text: "❌ Mahsulot mavjud emas" });
-                return;
-            }
-
-            cartService.addToCart(chatId, product);
-
-            // ✅ narx yozib o'zgartirish uchun state
-            cartService.setState(chatId, { mode: "await_last_price" });
-
-            const items = cartService.listItems(chatId);
-            const totals = cartService.calcTotals(chatId);
-
-            await deleteCartMessage(bot, redis, chatId);
-
-            const mid = await sendNewCartMessage(
-                bot,
-                redis,
-                chatId,
-                formatCart(items, totals),
-                cartKeyboard(items)
-            );
-
-            await tryPinCart(bot, chatId, mid);
-            await sendCartJumpHint(bot, chatId, mid);
-
-            await bot.answerCallbackQuery(q.id, { text: "✅ Savatga qo‘shildi" });
-            return;
-        }
-
-        if (data.startsWith("cart:inc:")) {
-            const pid = data.split(":")[2];
-            cartService.incQty(chatId, pid);
-
-            const items = cartService.listItems(chatId);
-            const totals = cartService.calcTotals(chatId);
-
-            await deleteCartMessage(bot, redis, chatId);
-
-            const mid = await sendNewCartMessage(
-                bot,
-                redis,
-                chatId,
-                formatCart(items, totals),
-                cartKeyboard(items)
-            );
-
-            await tryPinCart(bot, chatId, mid);
-            await sendCartJumpHint(bot, chatId, mid);
-
-            await bot.answerCallbackQuery(q.id);
-            return;
-        }
-
-        if (data.startsWith("cart:dec:")) {
-            const pid = data.split(":")[2];
-            cartService.decQty(chatId, pid);
-
-            const items = cartService.listItems(chatId);
-            const totals = cartService.calcTotals(chatId);
-
-            await deleteCartMessage(bot, redis, chatId);
-
-            if (items.length) {
-                const mid = await sendNewCartMessage(
-                    bot,
-                    redis,
-                    chatId,
-                    formatCart(items, totals),
-                    cartKeyboard(items)
-                );
-                await tryPinCart(bot, chatId, mid);
-                await sendCartJumpHint(bot, chatId, mid);
-            }
-
-            await bot.answerCallbackQuery(q.id);
-            return;
-        }
-
+        // noop
         if (data === "noop") {
-            await bot.answerCallbackQuery(q.id);
+            await safeAnswer(bot, q, "✅");
             return;
         }
 
-        // sell (stub)
-        if (data === "sell") {
-            await bot.sendMessage(chatId, "✅ Sotish yakunlandi (service ulanadi)");
+        // ✅ 1) flows first
+        if (typeof onExpenseCallback === "function" && (await onExpenseCallback(bot, q, seller))) return;
+        if (typeof onPurchaseCallback === "function" && (await onPurchaseCallback(bot, q, seller))) return;
+
+        // ✅ 2) delete
+        if (data.startsWith("del_sale:")) {
+            const id = data.split(":")[1];
+            const sale = await Sale.findById(id);
+            if (!sale) {
+                await safeAnswer(bot, q, "Topilmadi");
+                return;
+            }
+            await safeAnswer(bot, q, "⏳ O‘chirish...");
+            await startDeleteFlow(bot, chatId, from.id, "sale", id, sale.orderNo);
             return;
         }
 
-        await bot.answerCallbackQuery(q.id).catch(() => { });
+        if (data.startsWith("del_exp:")) {
+            const id = data.split(":")[1];
+            const exp = await Expense.findById(id);
+            if (!exp) {
+                await safeAnswer(bot, q, "Topilmadi");
+                return;
+            }
+            await safeAnswer(bot, q, "⏳ O‘chirish...");
+            await startDeleteFlow(bot, chatId, from.id, "expense", id, exp.orderNo);
+            return;
+        }
+
+        // ✅ 3) debts (customer)
+        if (data.startsWith("pay:")) return await handleDebtPayAsk(bot, q, chatId);
+        if (data.startsWith("payfull:")) return await handleDebtPayFull(bot, q, chatId, seller);
+        if (data.startsWith("paypart:")) return await handleDebtPayPart(bot, q, chatId, from.id);
+
+        // ✅ 4) month report
+        if (data.startsWith("rep_month:")) return await handleMonthReport(bot, q, chatId, from.id);
+
+        // ✅ 5) report filters
+        if (data.startsWith("rep_f_all:")) return await handleReportFilterAll(bot, q, from.id);
+        if (data.startsWith("rep_f_none:")) return await handleReportFilterNone(bot, q, from.id);
+        if (data.startsWith("rep_refresh:")) return await handleReportRefresh(bot, q, from.id);
+        if (data.startsWith("rep_f:")) return await handleReportFilterToggle(bot, q, from.id);
+
+        // default
+        await safeAnswer(bot, q);
     } catch (e) {
-        console.error("onCallback error:", e?.response?.body || e);
-        if (chatId) await bot.sendMessage(chatId, "⚠️ Xatolik: qayta urinib ko‘ring.").catch(() => { });
-        await bot.answerCallbackQuery(q.id).catch(() => { });
+        await bot.sendMessage(chatId, `⚠️ Xatolik: ${e.message}`);
+        await safeAnswer(bot, q, "⚠️ Xato");
     }
 }
 
 module.exports = { onCallback };
+
+
+
+
+
+// // src/handlers/onCallback.js  (FINAL + REPORT FILTERS)
+// const { GROUP_CHAT_ID } = require("../config");
+
+// const Sale = require("../models/Sale");
+// const Expense = require("../models/Expense");
+// const Debt = require("../models/Debt");
+
+// const { makeMonthlyReport } = require("../services/monthlyReport");
+// const { payDebt } = require("../services/debtPay");
+// const { sendToGroup } = require("../services/notify");
+// const { debtPayNotifyText } = require("../utils/report");
+// const { redis } = require("../services/auth");
+
+// const { formatMoney } = require("../utils/money");
+// const { getUserName, escapeHtml, payAmountKeyboard } = require("../logic/ui");
+// const { startDeleteFlow } = require("../logic/deleteFlow");
+
+// // ✅ flows
+// const { onExpenseCallback } = require("./expenseFlow");
+// const { onPurchaseCallback } = require("./purchaseFlow");
+
+// // ✅ NEW: report filters keyboard + categories
+// const { reportFiltersKeyboard } = require("../keyboards");
+// const { EXPENSE_CATEGORIES } = require("../utils/expenseCategories");
+
+// // ===================== HELPERS =====================
+// function getSeller(from) {
+//     return { tgId: from.id, tgName: getUserName({ from }) };
+// }
+
+// async function safeAnswer(bot, q, text) {
+//     try {
+//         if (text) return await bot.answerCallbackQuery(q.id, { text });
+//         return await bot.answerCallbackQuery(q.id);
+//     } catch {
+//         // ignore
+//     }
+// }
+
+// // ✅ spinner qolib ketmasin
+// async function ack(bot, q) {
+//     try { await bot.answerCallbackQuery(q.id); } catch { }
+// }
+
+// function normalizePhone(phone) {
+//     if (!phone) return null;
+//     let p = String(phone).replace(/[^\d]/g, "");
+//     if (p.length === 9) p = "998" + p;
+//     return p || null;
+// }
+
+// // ===================== REPORT FILTER STATE =====================
+// const REP_KEY = (userId, y, m) => `rep_filter:${userId}:${y}:${m}`;
+
+// function allExpenseKeys() {
+//     return EXPENSE_CATEGORIES.map(x => x.key);
+// }
+
+// async function getSelectedExpenseKeys(userId, year, monthIndex) {
+//     const raw = await redis.get(REP_KEY(userId, year, monthIndex));
+//     if (!raw) return allExpenseKeys(); // ✅ default ALL
+//     try {
+//         const arr = JSON.parse(raw);
+//         if (Array.isArray(arr) && arr.length) return arr;
+//         // agar [] bo'lsa ham ALL ko'rsatamiz (siz xohlasangiz [] = 0 qilib ham qilsa bo'ladi)
+//         return allExpenseKeys();
+//     } catch {
+//         return allExpenseKeys();
+//     }
+// }
+
+// async function setSelectedExpenseKeys(userId, year, monthIndex, keys) {
+//     const arr = Array.isArray(keys) ? keys : allExpenseKeys();
+//     await redis.set(REP_KEY(userId, year, monthIndex), JSON.stringify(arr), "EX", 60 * 60);
+// }
+
+// // ===================== DEBT (CUSTOMER) =====================
+// async function handleDebtPayAsk(bot, q, chatId) {
+//     const debtId = q.data.split(":")[1];
+//     const debt = await Debt.findById(debtId);
+
+//     if (!debt) {
+//         await safeAnswer(bot, q, "Qarz topilmadi");
+//         return true;
+//     }
+
+//     // faqat customer debt
+//     if (debt.kind && debt.kind !== "customer") {
+//         await safeAnswer(bot, q, "Bu bo‘lim faqat mijoz qarzi uchun");
+//         return true;
+//     }
+
+//     await bot.sendMessage(
+//         chatId,
+//         `📌 Qarz: <b>${escapeHtml(debt.note || "-")}</b>\n` +
+//         `Qolgan: <b>${formatMoney(debt.remainingDebt)}</b> so'm\n` +
+//         `Qanday to'laysiz?`,
+//         { parse_mode: "HTML", ...payAmountKeyboard(debtId) }
+//     );
+
+//     await safeAnswer(bot, q);
+//     return true;
+// }
+
+// async function handleDebtPayFull(bot, q, chatId, seller) {
+//     const debtId = q.data.split(":")[1];
+//     const debt = await Debt.findById(debtId);
+
+//     if (!debt) {
+//         await safeAnswer(bot, q, "Qarz topilmadi");
+//         return true;
+//     }
+
+//     if (debt.kind && debt.kind !== "customer") {
+//         await safeAnswer(bot, q, "Bu bo‘lim faqat mijoz qarzi uchun");
+//         return true;
+//     }
+
+//     const { debt: updated, actualPay } = await payDebt({
+//         debtId,
+//         amount: debt.remainingDebt,
+//         payer: seller
+//     });
+
+//     const notify = debtPayNotifyText({
+//         payerName: seller.tgName,
+//         note: escapeHtml(debt.note || "-"),
+//         phone: normalizePhone(debt.customerPhone),
+//         paid: actualPay,
+//         remaining: updated.remainingDebt
+//     });
+
+//     await bot.sendMessage(
+//         chatId,
+//         `✅ To'landi: <b>${formatMoney(actualPay)}</b> so'm\n` +
+//         `Qolgan: <b>${formatMoney(updated.remainingDebt)}</b> so'm`,
+//         { parse_mode: "HTML" }
+//     );
+
+//     await sendToGroup(bot, notify);
+//     await safeAnswer(bot, q);
+//     return true;
+// }
+
+// async function handleDebtPayPart(bot, q, chatId, fromId) {
+//     const debtId = q.data.split(":")[1];
+
+//     const debt = await Debt.findById(debtId);
+//     if (!debt) {
+//         await safeAnswer(bot, q, "Qarz topilmadi");
+//         return true;
+//     }
+
+//     if (debt.kind && debt.kind !== "customer") {
+//         await safeAnswer(bot, q, "Bu bo‘lim faqat mijoz qarzi uchun");
+//         return true;
+//     }
+
+//     await redis.set(`await_pay_amount:${fromId}`, debtId, "EX", 300);
+//     await bot.sendMessage(chatId, "✍️ Qancha to'laysiz? (faqat summa yozing, masalan: 30000)");
+//     await safeAnswer(bot, q);
+//     return true;
+// }
+
+// // ===================== MONTH REPORT (EDIT + FILTERS) =====================
+// async function editReportMessage(bot, q, rep, year, monthIndex, selectedKeys) {
+//     const textMsg =
+//         `📆 <b>Oylik hisobot: ${rep.monthTitle}</b>\n\n` +
+//         `📦 Kirim (maxsulot keldi): <b>${formatMoney(rep.purchaseSum)}</b> so'm\n` +
+//         `🧁 Sotildi (jami savdo): <b>${formatMoney(rep.soldTotal)}</b> so'm\n` +
+//         `💰 Sotuvdan tushgan: <b>${formatMoney(rep.paidSum)}</b> so'm\n` +
+//         `💸 Chiqimlar: <b>${formatMoney(rep.expenseSum)}</b> so'm\n\n` +
+//         `👥 Bizdan qarz (mijozlar): <b>${formatMoney(rep.customerDebtSum)}</b> so'm\n` +
+//         `🏭 Bizning qarz (firmalar): <b>${formatMoney(rep.supplierDebtSum)}</b> so'm\n` +
+//         `🏦 Kassa balansi: <b>${formatMoney(rep.balance)}</b> so'm\n\n` +
+//         `🎛 Filter (Chiqim): <b>${(selectedKeys?.length ? selectedKeys.join(", ") : "ALL")}</b>`;
+
+//     // ✅ Oyni tanlash xabarini edit qilamiz (rasmdagidek chiroyli bo'ladi)
+//     return bot.editMessageText(textMsg, {
+//         chat_id: q.message.chat.id,
+//         message_id: q.message.message_id,
+//         parse_mode: "HTML",
+//         reply_markup: reportFiltersKeyboard({ year, monthIndex, selectedKeys })
+//     });
+// }
+
+// async function handleMonthReport(bot, q, chatId, userId) {
+//     const [, y, m] = q.data.split(":");
+//     const year = parseInt(y, 10);
+//     const monthIndex = parseInt(m, 10);
+
+//     const selectedKeys = await getSelectedExpenseKeys(userId, year, monthIndex);
+
+//     // ✅ monthlyReport.js opts bilan ishlaydi
+//     const rep = await makeMonthlyReport(year, monthIndex, { expenseCategories: selectedKeys });
+
+//     // ✅ message edit + filter buttons
+//     await editReportMessage(bot, q, rep, year, monthIndex, selectedKeys);
+
+//     // txt file alohida yuboramiz
+//     await bot.sendDocument(chatId, rep.filePath, { caption: `📄 Batafsil oylik hisobot: ${rep.fileName}` });
+
+//     if (GROUP_CHAT_ID) {
+//         await bot.sendDocument(GROUP_CHAT_ID, rep.filePath, { caption: `📄 Oylik hisobot (${rep.monthTitle})` });
+//     }
+
+//     return true;
+// }
+
+// // ✅ filter toggle
+// async function handleReportFilterToggle(bot, q, userId) {
+//     const [, y, m, key] = q.data.split(":");
+//     const year = parseInt(y, 10);
+//     const monthIndex = parseInt(m, 10);
+
+//     const allKeys = allExpenseKeys();
+//     const current = await getSelectedExpenseKeys(userId, year, monthIndex);
+
+//     const set = new Set(current);
+//     if (set.has(key)) set.delete(key);
+//     else set.add(key);
+
+//     // ✅ hech narsa qolmasa ham ALLga qaytaramiz (sodda)
+//     const nextKeys = set.size ? Array.from(set) : allKeys;
+
+//     await setSelectedExpenseKeys(userId, year, monthIndex, nextKeys);
+
+//     const rep = await makeMonthlyReport(year, monthIndex, { expenseCategories: nextKeys });
+//     await editReportMessage(bot, q, rep, year, monthIndex, nextKeys);
+//     return true;
+// }
+
+// // ✅ filter all
+// async function handleReportFilterAll(bot, q, userId) {
+//     const [, y, m] = q.data.split(":");
+//     const year = parseInt(y, 10);
+//     const monthIndex = parseInt(m, 10);
+
+//     const allKeys = allExpenseKeys();
+//     await setSelectedExpenseKeys(userId, year, monthIndex, allKeys);
+
+//     const rep = await makeMonthlyReport(year, monthIndex, { expenseCategories: allKeys });
+//     await editReportMessage(bot, q, rep, year, monthIndex, allKeys);
+//     return true;
+// }
+
+// // ✅ filter clear -> biz ALLga qaytaramiz (xohlasangiz 0 qilib ham qilamiz)
+// async function handleReportFilterNone(bot, q, userId) {
+//     const [, y, m] = q.data.split(":");
+//     const year = parseInt(y, 10);
+//     const monthIndex = parseInt(m, 10);
+
+//     const allKeys = allExpenseKeys();
+//     await setSelectedExpenseKeys(userId, year, monthIndex, allKeys);
+
+//     const rep = await makeMonthlyReport(year, monthIndex, { expenseCategories: allKeys });
+//     await editReportMessage(bot, q, rep, year, monthIndex, allKeys);
+//     return true;
+// }
+
+// // ✅ refresh
+// async function handleReportRefresh(bot, q, userId) {
+//     const [, y, m] = q.data.split(":");
+//     const year = parseInt(y, 10);
+//     const monthIndex = parseInt(m, 10);
+
+//     const keys = await getSelectedExpenseKeys(userId, year, monthIndex);
+//     const rep = await makeMonthlyReport(year, monthIndex, { expenseCategories: keys });
+//     await editReportMessage(bot, q, rep, year, monthIndex, keys);
+//     return true;
+// }
+
+// // ===================== MAIN CALLBACK =====================
+// async function onCallback(bot, q) {
+//     const msg = q.message;
+//     const chatId = msg.chat.id;
+//     const from = q.from;
+//     const data = q.data || "";
+//     const seller = getSeller(from);
+
+//     // ✅ spinner stop
+//     await ack(bot, q);
+
+//     try {
+//         // noop
+//         if (data === "noop") {
+//             await safeAnswer(bot, q, "✅");
+//             return;
+//         }
+
+//         // ✅ 1) flows always first
+//         if (typeof onExpenseCallback === "function" && await onExpenseCallback(bot, q, seller)) return;
+//         if (typeof onPurchaseCallback === "function" && await onPurchaseCallback(bot, q, seller)) return;
+
+//         // ✅ 2) delete
+//         if (data.startsWith("del_sale:")) {
+//             const id = data.split(":")[1];
+//             const sale = await Sale.findById(id);
+//             if (!sale) return await safeAnswer(bot, q, "Topilmadi");
+
+//             await startDeleteFlow(bot, chatId, from.id, "sale", id, sale.orderNo);
+//             return;
+//         }
+
+//         if (data.startsWith("del_exp:")) {
+//             const id = data.split(":")[1];
+//             const exp = await Expense.findById(id);
+//             if (!exp) return await safeAnswer(bot, q, "Topilmadi");
+
+//             await startDeleteFlow(bot, chatId, from.id, "expense", id, exp.orderNo);
+//             return;
+//         }
+
+//         // ✅ 3) debts (customer)
+//         if (data.startsWith("pay:")) return await handleDebtPayAsk(bot, q, chatId);
+//         if (data.startsWith("payfull:")) return await handleDebtPayFull(bot, q, chatId, seller);
+//         if (data.startsWith("paypart:")) return await handleDebtPayPart(bot, q, chatId, from.id);
+
+//         // ✅ 4) month report
+//         if (data.startsWith("rep_month:")) return await handleMonthReport(bot, q, chatId, from.id);
+
+//         // ✅ 5) report filters
+//         if (data.startsWith("rep_f_all:")) return await handleReportFilterAll(bot, q, from.id);
+//         if (data.startsWith("rep_f_none:")) return await handleReportFilterNone(bot, q, from.id);
+//         if (data.startsWith("rep_refresh:")) return await handleReportRefresh(bot, q, from.id);
+//         if (data.startsWith("rep_f:")) return await handleReportFilterToggle(bot, q, from.id);
+
+//         // default
+//         await safeAnswer(bot, q);
+//     } catch (e) {
+//         await bot.sendMessage(chatId, `⚠️ Xatolik: ${e.message}`);
+//     } finally {
+//         await safeAnswer(bot, q);
+//     }
+// }
+
+// module.exports = { onCallback };

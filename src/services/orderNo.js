@@ -1,3 +1,4 @@
+// src/services/orderNo.js
 const Counter = require("../models/Counter");
 
 // umumiy sequence: 1,2,3,... format: 0001..9999, keyin 10000...

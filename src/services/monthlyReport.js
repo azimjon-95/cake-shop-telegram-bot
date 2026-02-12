@@ -1,120 +1,113 @@
+// src/services/monthlyReport.js (FINAL + FILTERS)
 const fs = require("fs");
 const path = require("path");
 const dayjs = require("dayjs");
 
 const Sale = require("../models/Sale");
+const Purchase = require("../models/Purchase");
 const Expense = require("../models/Expense");
+const Supplier = require("../models/Supplier");
 const Debt = require("../models/Debt");
 const Counter = require("../models/Counter");
 
 const { formatMoney } = require("../utils/money");
-const { UZ_MONTHS } = require("../utils/months");
 
-// faqat HH:mm kerak bo'lsa time utilingizdan ham olishingiz mumkin
-function fmtDate(d) {
-    return dayjs(d).format("YYYY-MM-DD"); // cheslo uchun
+function monthRange(year, monthIndex) {
+    // monthIndex: 0..11
+    const start = dayjs(new Date(year, monthIndex, 1)).startOf("month").toDate();
+    // ✅ exclusive end (next month start)
+    const end = dayjs(new Date(year, monthIndex, 1)).add(1, "month").startOf("month").toDate();
+    return { start, end };
 }
-function fmtTime(d) {
-    return dayjs(d).format("HH:mm");
-}
 
-async function makeMonthlyReport(year, monthIndex /* 0-11 */) {
-    const from = dayjs().year(year).month(monthIndex).startOf("month").toDate();
-    const to = dayjs().year(year).month(monthIndex).endOf("month").toDate();
-
-    const [sales, expenses, debtsOpen, balance] = await Promise.all([
-        Sale.find({ createdAt: { $gte: from, $lte: to } }).sort({ createdAt: 1 }),
-        Expense.find({ createdAt: { $gte: from, $lte: to } }).sort({ createdAt: 1 }),
-        // Ochiq qarzlar (hozirgi holat) — oy bo'yicha filtrlash shart emas, siz “usha oyniki qolgan” dedingiz:
-        // soddaroq: shu oyni ichida yaratilgan qarzlar orasidan yopilmaganlari
-        Debt.find({ createdAt: { $gte: from, $lte: to }, isClosed: false }).sort({ createdAt: -1 }).limit(500),
-        Counter.findOne({ key: "balance" })
+async function sumAgg(Model, match, field) {
+    const r = await Model.aggregate([
+        { $match: match },
+        { $group: { _id: null, sum: { $sum: `$${field}` } } }
     ]);
+    return Number(r?.[0]?.sum || 0);
+}
 
-    const saleSum = sales.reduce((a, s) => a + (s.paidTotal || 0), 0);
-    const expenseSum = expenses.reduce((a, e) => a + (e.amount || 0), 0);
-    const debtSum = debtsOpen.reduce((a, d) => a + (d.remainingDebt || 0), 0);
+async function makeMonthlyReport(year, monthIndex, opts = {}) {
+    const { start, end } = monthRange(year, monthIndex);
+    const monthTitle = dayjs(start).format("MMMM-YY");
 
-    // === KUNLIK AGGREGATSIA ===
-    const dailySales = new Map();   // YYYY-MM-DD -> sum
-    const dailyExpenses = new Map();
+    // ✅ expense filter keys
+    const expenseCats = Array.isArray(opts.expenseCategories) ? opts.expenseCategories : null;
 
-    for (const s of sales) {
-        const key = fmtDate(s.createdAt);
-        dailySales.set(key, (dailySales.get(key) || 0) + (s.paidTotal || 0));
+    // ✅ 1) Sales
+    const paidSum = await sumAgg(Sale, { createdAt: { $gte: start, $lt: end } }, "paidTotal");
+    const debtFromSales = await sumAgg(Sale, { createdAt: { $gte: start, $lt: end } }, "debtTotal");
+    const soldTotal = paidSum + debtFromSales;
+
+    // ✅ 2) Purchases
+    const purchaseSum = await sumAgg(Purchase, { createdAt: { $gte: start, $lt: end } }, "totalCost");
+
+    // ✅ 3) Expenses (FILTER!)
+    const expenseMatch = { createdAt: { $gte: start, $lt: end } };
+    if (expenseCats && expenseCats.length) {
+        expenseMatch.categoryKey = { $in: expenseCats };
     }
-    for (const e of expenses) {
-        const key = fmtDate(e.createdAt);
-        dailyExpenses.set(key, (dailyExpenses.get(key) || 0) + (e.amount || 0));
-    }
+    const expenseSum = await sumAgg(Expense, expenseMatch, "amount");
 
-    const monthTitle = `${UZ_MONTHS[monthIndex]}-${String(year).slice(-2)}`;
+    // ✅ 4) Customer debts (bizdan qarz) -> Debt.js
+    const customerDebtSum = await sumAgg(
+        Debt,
+        { isClosed: false, $or: [{ kind: { $exists: false } }, { kind: "customer" }] },
+        "remainingDebt"
+    );
 
-    // === TXT REPORT ===
+    // ✅ 5) Supplier debts (bizning qarz) -> Supplier.debt
+    const supplierDebtAgg = await Supplier.aggregate([
+        { $group: { _id: null, sum: { $sum: "$debt" } } }
+    ]);
+    const supplierDebtSum = Number(supplierDebtAgg?.[0]?.sum || 0);
+
+    // ✅ 6) Cash balance
+    const balanceDoc = await Counter.findOne({ key: "balance" });
+    const balance = Number(balanceDoc?.value || 0);
+
+    // ✅ TXT
     const lines = [];
-    lines.push(`OYLIK HISOBOT: ${monthTitle}`);
-    lines.push(`Oraliq: ${fmtDate(from)} -> ${fmtDate(to)}`);
-    lines.push("");
-    lines.push(`Sotuvdan tushgan pul: ${formatMoney(saleSum)} so‘m`);
-    lines.push(`Chiqimlar: ${formatMoney(expenseSum)} so‘m`);
-    lines.push(`Ochiq qarzlar (shu oyda yaratilgan, yopilmagan): ${formatMoney(debtSum)} so‘m`);
-    lines.push(`Hozirgi kassa balansi: ${formatMoney(balance?.value || 0)} so‘m`);
+    lines.push(`OYLIK HISOBOT: ${dayjs(start).format("YYYY-MM")}`);
+    lines.push(
+        `Oraliq: ${dayjs(start).format("YYYY-MM-DD")} -> ${dayjs(end).subtract(1, "day").format("YYYY-MM-DD")}`
+    );
     lines.push("");
 
-    lines.push("=== KUNLIK YIG‘INDI (SOTUV/CHIQIM) ===");
-    // barcha kunlarni birlashtirib chiqamiz
-    const allDays = new Set([...dailySales.keys(), ...dailyExpenses.keys()]);
-    const sortedDays = Array.from(allDays).sort();
-    for (const day of sortedDays) {
-        lines.push(
-            `- ${day} | Sotuv: ${formatMoney(dailySales.get(day) || 0)} so‘m | Chiqim: ${formatMoney(dailyExpenses.get(day) || 0)} so‘m`
-        );
+    lines.push(`📦 Kirim (maxsulot keldi): ${formatMoney(purchaseSum)} so'm`);
+    lines.push(`🧁 Sotildi (jami savdo): ${formatMoney(soldTotal)} so'm`);
+    lines.push(`💰 Sotuvdan tushgan: ${formatMoney(paidSum)} so'm`);
+
+    if (expenseCats && expenseCats.length) {
+        lines.push(`🎛 Filter (Chiqim): ${expenseCats.join(", ")}`);
+    } else {
+        lines.push(`🎛 Filter (Chiqim): ALL`);
     }
+    lines.push(`💸 Chiqimlar: ${formatMoney(expenseSum)} so'm`);
 
     lines.push("");
-    lines.push("=== SOTUVLAR (batafsil) ===");
-    for (const s of sales) {
-        lines.push(
-            `- ${fmtDate(s.createdAt)} ${fmtTime(s.createdAt)} | ${s.seller?.tgName || "-"} | `
-            + `Tushgan=${formatMoney(s.paidTotal)} | Qarz=${formatMoney(s.debtTotal)} | `
-            + `${(s.items || []).map(i => `${i.name} x${i.qty} (${formatMoney(i.price)})`).join(", ")}`
-        );
-    }
+    lines.push(`👥 Bizdan qarz (mijozlar): ${formatMoney(customerDebtSum)} so'm`);
+    lines.push(`🏭 Bizning qarz (firmalar): ${formatMoney(supplierDebtSum)} so'm`);
+    lines.push(`🏦 Kassa balansi: ${formatMoney(balance)} so'm`);
 
-    lines.push("");
-    lines.push("=== CHIQIMLAR (batafsil) ===");
-    for (const e of expenses) {
-        lines.push(
-            `- ${fmtDate(e.createdAt)} ${fmtTime(e.createdAt)} | ${e.spender?.tgName || "-"} | ${e.title} | -${formatMoney(e.amount)}`
-        );
-    }
-
-    lines.push("");
-    lines.push("=== OCHIQ QARZLAR (batafsil) ===");
-    for (const d of debtsOpen) {
-        lines.push(
-            `- ${fmtDate(d.createdAt)} ${fmtTime(d.createdAt)} | ${d.seller?.tgName || "-"} | ${d.note} | `
-            + `Tel: ${d.customerPhone || "-"} | Qolgan=${formatMoney(d.remainingDebt)}`
-        );
-    }
-
-    const reportDir = path.join(process.cwd(), "reports");
-    if (!fs.existsSync(reportDir)) fs.mkdirSync(reportDir);
-
-    const fileName = `oylik_hisobot_${year}-${String(monthIndex + 1).padStart(2, "0")}.txt`;
-    const filePath = path.join(reportDir, fileName);
+    const fileName = `oylik_hisobot_${dayjs(start).format("YYYY-MM")}.txt`;
+    const filePath = path.join(process.cwd(), fileName);
     fs.writeFileSync(filePath, lines.join("\n"), "utf8");
 
     return {
         monthTitle,
-        saleSum,
+        range: { start, end },
+        purchaseSum,
+        soldTotal,
+        paidSum,
         expenseSum,
-        debtSum,
-        balance: balance?.value || 0,
-        from,
-        to,
+        customerDebtSum,
+        supplierDebtSum,
+        balance,
+        fileName,
         filePath,
-        fileName
+        expenseCats
     };
 }
 

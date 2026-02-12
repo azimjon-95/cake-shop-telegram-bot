@@ -1,3 +1,4 @@
+// src/utils/parseExpense.js
 const { findAllNumbers } = require("./money");
 
 function parseQty(text) {

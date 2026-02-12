@@ -1,3 +1,4 @@
+// src/db.js
 const mongoose = require("mongoose");
 const { MONGO_URI } = require("./config");
 
