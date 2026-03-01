@@ -1,3 +1,4 @@
+// middlewares verifying Telegram WebApp initData and extracting user info
 const crypto = require("crypto");
 
 // Telegram WebApp initData validation

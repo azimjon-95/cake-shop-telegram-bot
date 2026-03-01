@@ -1,3 +1,4 @@
+// Expense model
 const mongoose = require("mongoose");
 
 const PersonSchema = new mongoose.Schema({

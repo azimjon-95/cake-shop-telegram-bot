@@ -1,3 +1,4 @@
+// closeCash.js - daily cash closing and report generation
 const fs = require("fs");
 const path = require("path");
 const Sale = require("../models/Sale");

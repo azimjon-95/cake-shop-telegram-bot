@@ -61,13 +61,32 @@ function formatDebtCard(d) {
     );
 }
 
+function printReceiptButton(webappUrl) {
+    return [{ text: "🧾 Chekni chop etish", web_app: { url: webappUrl } }];
+}
+
+function mergeKeyboardsAbove(deleteKbd, topRow) {
+    // deleteKbd: { reply_markup: { inline_keyboard: [...] } }
+    const old = deleteKbd?.reply_markup?.inline_keyboard || [];
+    return {
+        reply_markup: {
+            inline_keyboard: [
+                [...topRow],
+                ...old
+            ]
+        }
+    };
+}
+
 module.exports = {
     escapeHtml,
     getUserName,
     itemsToText,
+    mergeKeyboardsAbove,
+    printReceiptButton,
     deleteSaleKeyboard,
     deleteExpenseKeyboard,
     debtPayButton,
     payAmountKeyboard,
-    formatDebtCard
+    formatDebtCard,
 };

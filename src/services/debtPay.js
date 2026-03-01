@@ -1,3 +1,4 @@
+// debtPay.js - handling debt payments, updating balances, and ensuring data integrity with transactions
 const Debt = require("../models/Debt");
 const Counter = require("../models/Counter");
 const { mongoose } = require("../db");

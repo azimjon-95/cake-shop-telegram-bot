@@ -1,3 +1,4 @@
+// Keyboards for Telegram bot
 const { UZ_MONTHS } = require("./utils/months");
 const { EXPENSE_CATEGORIES } = require("./utils/expenseCategories");
 const Supplier = require("./models/Supplier");
@@ -21,10 +22,10 @@ function mainMenuKeyboard() {
         keyboard: [
             [{ text: "🧁 Sotish" }, { text: "💸 Chiqim" }],
             [{ text: "📌 Qarzlar" }, { text: "🔒 Kasani yopish" }],
-            [{ text: "📆 Oylik hisobot" }, { text: "ℹ️ Yordam" }],
-            [{ text: "📦 Kirim (Taminot)" }]
+            [{ text: "📦 Kirim (Taminot)" }, { text: "📆 Oylik hisobot" }],
+            [{ text: "🎁 Kashback orqali xarid" }, { text: "ℹ️ Yordam" }],   // ✅ yangi
         ],
-        resize_keyboard: true
+        resize_keyboard: true,
     };
 }
 

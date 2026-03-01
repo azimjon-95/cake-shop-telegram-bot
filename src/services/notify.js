@@ -1,3 +1,4 @@
+// notify.js - sending notifications to Telegram group chat
 const { GROUP_CHAT_ID } = require("../config");
 
 async function sendToGroup(bot, text, opts = {}) {

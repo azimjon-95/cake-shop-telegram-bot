@@ -1,10 +1,10 @@
-// src/handlers/onMessage.js (FINAL NEW VERSION + CHANGE SMS)
+// src/handlers/onMessage.js (FINAL NEW VERSION + CHANGE SMS + WEBAPP ORDER)
 const dayjs = require("dayjs");
 
-const { GROUP_CHAT_ID } = require("../config");
+const { GROUP_CHAT_ID, CUSTOMER_BOT_USERNAME, MIN_QR_PAID } = require("../config");
 const { mainMenuKeyboard, startKeyboard, monthKeyboard } = require("../keyboards");
 const { isAuthed, setAuthed, setMode, getMode, checkPassword, redis } = require("../services/auth");
-
+const { startCashbackFlow, handleCashbackMessage } = require("../logic/cashbackFlow");
 const Debt = require("../models/Debt");
 
 const { closeCashAndMakeReport } = require("../services/closeCash");
@@ -13,15 +13,17 @@ const { closeNotifyText, saleNotifyText, debtPayNotifyText } = require("../utils
 const { payDebt } = require("../services/debtPay");
 const { parseSaleMessage } = require("../utils/parseSale");
 const { formatMoney } = require("../utils/money");
-
 const { helpText } = require("../utils/helpText");
 const { saveSaleWithTx } = require("../logic/storage");
 const { handleDeleteMessage } = require("../logic/deleteFlow");
+const { createReceiptTokenIfNeeded } = require("../services/receipt");
 const {
     getUserName,
     itemsToText,
     deleteSaleKeyboard,
     formatDebtCard,
+    printReceiptButton,
+    mergeKeyboardsAbove,
     debtPayButton
 } = require("../logic/ui");
 
@@ -31,9 +33,91 @@ const { startExpense, onExpenseMessage } = require("./expenseFlow");
 // ✅ Purchase + Supplier flow
 const { startPurchase, onPurchaseMessage } = require("./purchaseFlow");
 
+// =========================
+// ✅ Helpers (HTML safe)
+// =========================
+function escHtml(s) {
+    return String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
+
+function normalizePhone(raw) {
+    let p = String(raw ?? "").replace(/[^\d]/g, "");
+    if (!p) return "";
+    if (p.length === 9) p = "998" + p;
+    return p;
+}
+
+// =========================
+// ✅ WebApp Order Handler
+// msg.web_app_data.data -> JSON
+// { cake, price, name, phone, img }
+// =========================
+async function handleWebAppOrder(bot, msg) {
+    const wad = msg?.web_app_data?.data;
+    if (!wad) return false;
+
+    let data;
+    try {
+        data = JSON.parse(wad);
+    } catch (e) {
+        await bot.sendMessage(msg.chat.id, "❌ WebApp data xato (JSON parse bo‘lmadi).");
+        return true;
+    }
+
+    const user = msg.from || {};
+    const fromName =
+        [user.first_name, user.last_name].filter(Boolean).join(" ") ||
+        "—";
+    const username = user.username ? `@${user.username}` : "—";
+
+    const cake = escHtml(data.cake || "—");
+    const price = escHtml(data.price || "—");
+    const clientName = escHtml(data.name || "—");
+    const phone = escHtml(normalizePhone(data.phone) || "—");
+
+    const text =
+        `🧁 <b>Yangi zakaz!</b>\n\n` +
+        `🍰 <b>Tort:</b> ${cake}\n` +
+        `💵 <b>Narx:</b> ${price}\n` +
+        `👤 <b>Mijoz:</b> ${clientName}\n` +
+        `📞 <b>Tel:</b> <code>${phone}</code>\n\n` +
+        `🙋‍♂️ <b>Telegram:</b> ${escHtml(fromName)} (${escHtml(username)})\n` +
+        `🆔 <b>TG ID:</b> <code>${user.id || "—"}</code>`;
+
+    const target = GROUP_CHAT_ID || msg.chat.id;
+
+    // Rasm bilan yuborish
+    try {
+        if (data.img) {
+            await bot.sendPhoto(target, data.img, { caption: text, parse_mode: "HTML" });
+        } else {
+            await bot.sendMessage(target, text, { parse_mode: "HTML" });
+        }
+    } catch (e) {
+        // Photo xato bo'lsa fallback
+        await bot.sendMessage(target, text, { parse_mode: "HTML" });
+    }
+
+    // Mijozga tasdiq
+    await bot.sendMessage(
+        msg.chat.id,
+        "✅ Zakazingiz qabul qilindi! Tez orada aloqaga chiqamiz. 🙌"
+    );
+
+    return true;
+}
+
 async function onMessage(bot, msg) {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
+
+    // ✅ WebApp order msg.text bo'lmasligi mumkin — shuning uchun eng boshida ushlaymiz
+    const webappHandled = await handleWebAppOrder(bot, msg);
+    if (webappHandled) return;
+
     const text = String(msg.text || "").trim();
     if (!userId || !text) return;
 
@@ -43,13 +127,22 @@ async function onMessage(bot, msg) {
 
     // /tozalash — hamma jarayonlarni bekor qilish + menyu
     if (text === "/tozalash") {
-        await redis.del(`await_pay_amount:${userId}`);
-        await redis.del(`await_del:${userId}`);
-        await redis.del(`pur_state:${userId}`);
-        await redis.del(`exp_state:${userId}`);
+        await Promise.all([
+            redis.del(`await_pay_amount:${userId}`),
+            redis.del(`await_del:${userId}`),
+            redis.del(`pur_state:${userId}`),
+            redis.del(`exp_state:${userId}`),
+
+            // ✅ yangi: cashback flow
+            redis.del(`await_cashback:${userId}`),
+        ]);
 
         await setMode(userId, "menu");
-        return bot.sendMessage(chatId, "🧹 Tozalandi. Menyu:", { reply_markup: mainMenuKeyboard() });
+        return bot.sendMessage(
+            chatId,
+            "🧹 Bekor qilindi (otmena). Menyu:",
+            { reply_markup: mainMenuKeyboard() }
+        );
     }
 
     // /start — autent bo'lsa menyu, bo'lmasa parol
@@ -71,6 +164,10 @@ async function onMessage(bot, msg) {
     // =========================================
     const delHandled = await handleDeleteMessage(bot, chatId, userId, text);
     if (delHandled.handled) return;
+
+    // 1) agar cashback flow davom etayotgan bo‘lsa
+    const cb = await handleCashbackMessage(bot, chatId, userId, msg.text);
+    if (cb.handled) return;
 
     // =========================================
     // 2) START BUTTON
@@ -155,6 +252,11 @@ async function onMessage(bot, msg) {
     // =========================================
     // 6) MENU BUTTONS
     // =========================================
+    if (text === "🎁 Kashback orqali xarid") {
+        await startCashbackFlow(bot, chatId, userId);
+        return;
+    }
+
     if (text === "🧁 Sotish") {
         await setMode(userId, "sale");
         return bot.sendMessage(
@@ -218,7 +320,6 @@ async function onMessage(bot, msg) {
 
         const itemsText = itemsToText(parsed.items);
 
-        // ✅ NEW: change ham qaytadi
         const { sale, debtDoc, change } = await saveSaleWithTx({
             seller,
             items: parsed.items,
@@ -234,12 +335,38 @@ async function onMessage(bot, msg) {
             phone: sale.phone
         });
 
+        const receiptToken = await createReceiptTokenIfNeeded({ sale, minPaid: MIN_QR_PAID });
+
+        // if (receiptToken && CUSTOMER_BOT_USERNAME) {
+        //     const deepLink = `https://t.me/${CUSTOMER_BOT_USERNAME}?start=${receiptToken.token}`;
+
+        //     await bot.sendMessage(
+        //         chatId,
+        //         `🎁 <b>Bonus olish</b>\n` +
+        //         `🧾 Chek: <code>${sale.orderNo}</code>\n` +
+        //         `✅ Shart: <b>${formatMoney(MIN_QR_PAID)}</b> so'm va undan yuqori\n\n` +
+        //         `👇 Bonus olish uchun link:\n${deepLink}\n\n` +
+        //         `📌 Eslatma: Chek <b>1 marta</b> ishlaydi (odno-razoviy).`,
+        //         { parse_mode: "HTML" }
+        //     );
+        // }
+
+        let webappUrl = null;
+        if (receiptToken?.token && process.env.WEBAPP_URL) {
+            webappUrl = `${process.env.WEBAPP_URL}/receipt?token=${receiptToken.token}`;
+        }
+
+        const delKbd = deleteSaleKeyboard(sale._id);
+        const mergedKbd = webappUrl
+            ? mergeKeyboardsAbove(delKbd, printReceiptButton(webappUrl))
+            : delKbd;
+
         await bot.sendMessage(
             chatId,
             `✅ <b>Sotuv saqlandi</b>\n🆔 ID: <code>${sale.orderNo}</code>\n` +
             `Tushgan: <b>${formatMoney(sale.paidTotal)}</b> so'm` +
             (sale.debtTotal > 0 ? `\nQarz: <b>${formatMoney(sale.debtTotal)}</b> so'm` : ""),
-            { parse_mode: "HTML", ...deleteSaleKeyboard(sale._id) }
+            { parse_mode: "HTML", ...mergedKbd }
         );
 
         await sendToGroup(bot, notify);
@@ -252,7 +379,6 @@ async function onMessage(bot, msg) {
             );
         }
 
-        // ✅ NEW: QAYTIM (DB ga saqlanmaydi, faqat sms)
         if (change && change > 0) {
             await bot.sendMessage(
                 chatId,

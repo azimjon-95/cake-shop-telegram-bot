@@ -1,5 +1,5 @@
+// dashboard.js - business metrics and activity summary for Telegram WebApp dashboard
 const dayjs = require("dayjs");
-
 const Sale = require("../models/Sale");
 const Expense = require("../models/Expense");
 const Debt = require("../models/Debt");
