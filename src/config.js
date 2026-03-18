@@ -1,6 +1,12 @@
 // src/config.js
 require("dotenv").config();
 
+const allowedIds = (process.env.WEBAPP_ALLOWED_TG_IDS || "")
+    .split(",")
+    .map(x => Number(String(x).trim()))
+    .filter(Boolean);
+
+
 module.exports = {
     BOT_TOKEN: process.env.BOT_TOKEN,
     MONGO_URI: process.env.MONGO_URI,
@@ -18,4 +24,5 @@ module.exports = {
     MIN_QR_PAID: Number(process.env.MIN_QR_PAID || 70000),
     GROUP_INVITE_LINK: process.env.GROUP_INVITE_LINK || "",
     GROUP_ID: process.env.GROUP_ID || "",
+    WEBAPP_ALLOWED_TG_IDS: allowedIds,
 };

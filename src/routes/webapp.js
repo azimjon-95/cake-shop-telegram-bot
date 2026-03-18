@@ -3,7 +3,7 @@ const express = require("express");
 const moment = require("moment-timezone");
 
 const { makeQrPngBuffer } = require("../services/qr");
-const { CUSTOMER_BOT_USERNAME, MIN_QR_PAID, TZ } = require("../config");
+const { CUSTOMER_BOT_USERNAME, MIN_QR_PAID, TZ, CUSTOMER_BOT_TOKEN, BOT_TOKEN } = require("../config");
 const Referral = require("../models/Referral");
 const Sale = require("../models/Sale");
 const Expense = require("../models/Expense");
@@ -15,6 +15,7 @@ const ReceiptToken = require("../models/ReceiptToken");
 const Customer = require("../models/Customer");
 
 const { verifyTgWebApp } = require("../middlewares/verifyTgWebApp");
+const { allowWebAppUsers } = require("../middlewares/allowWebAppUsers");
 
 // ✅ from/to parse helper (ISO yoki date string)
 // Agar from/to berilmasa => bugun (Toshkent TZ)
@@ -39,6 +40,9 @@ function getRangeFromQuery(req) {
 
 function webappRoutes({ botToken, customerBotToken, io }) {
     const r = express.Router();
+
+    // admin webapp uchun
+    r.use("/dashboard", verifyTgWebApp(BOT_TOKEN), allowWebAppUsers);
 
     // =========================
     // 📊 SUMMARY (cards)

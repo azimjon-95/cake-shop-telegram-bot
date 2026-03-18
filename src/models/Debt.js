@@ -16,18 +16,16 @@ const PaymentSchema = new mongoose.Schema({
 const DebtSchema = new mongoose.Schema({
     kind: { type: String, enum: ["customer", "supplier"], default: "customer", index: true },
 
-    // customer debt (old)
     saleId: { type: mongoose.Schema.Types.ObjectId, ref: "Sale", default: null },
     customerPhone: { type: String, default: null },
 
-    // supplier debt (new)
     supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", default: null, index: true },
 
     totalDebt: { type: Number, required: true, default: 0 },
     remainingDebt: { type: Number, required: true, default: 0 },
 
     note: { type: String, default: "" },
-    seller: { type: PersonSchema, default: null }, // customer debt uchun qoladi
+    seller: { type: PersonSchema, default: null },
     isClosed: { type: Boolean, default: false },
 
     payments: { type: [PaymentSchema], default: [] }

@@ -1,24 +1,50 @@
 // src/utils/money.js
-
+function normalizeMoneyText(raw = "") {
+    return String(raw)
+        .toLowerCase()
+        .replace(/so['’`]?m/gi, "")
+        .replace(/sum/gi, "")
+        .replace(/\bk\b/gi, " ming")
+        .replace(/(\d)\s*k\b/gi, "$1 ming")
+        .replace(/(\d)k\b/gi, "$1 ming")
+        .replace(/\s+/g, " ")
+        .trim();
+}
 function toIntMoney(raw) {
-    // "140 000" / "140000" / "140,000" / "140.000" -> 140000
-    // "100min" / "100ming" / "100 ming" -> 100000
-    const s0 = String(raw || "").trim().toLowerCase();
-    if (!s0) return 0;
+    let s = normalizeMoneyText(raw);
 
-    // min/ming suffix bor-yo‘qligini tekshiramiz
-    const hasThousandWord = /\b(min|ming)\b/.test(s0) || /(min|ming)$/.test(s0);
+    if (!s) return 0;
 
-    // faqat raqamlarni ajratib olamiz
-    const digits = s0.replace(/[^\d]/g, "");
-    if (!digits) return 0;
+    // 120ming / 120min / 120 ming / 120 mingdan
+    const thousandMatch = s.match(/^(\d+(?:[.,]\d+)?)\s*(ming|min|minga|mingdan)$/i);
+    if (thousandMatch) {
+        const n = Number(String(thousandMatch[1]).replace(",", "."));
+        return Math.round(n * 1000);
+    }
 
-    let n = parseInt(digits, 10);
-    if (!Number.isFinite(n)) return 0;
+    // Faqat son bo‘lsa
+    if (/^\d+$/.test(s)) {
+        const n = Number(s);
 
-    // ✅ 100min => 100 * 1000
-    if (hasThousandWord) n = n * 1000;
+        // 1..999 => ming deb qabul qilamiz
+        if (n >= 1 && n <= 999) return n * 1000;
 
+        // 1000+ => o‘zicha qoladi
+        return n;
+    }
+
+    // 120 ming so‘m, 15 min, 12 mingdan kabi ichida bo‘lsa
+    s = s.replace(/(\d+(?:[.,]\d+)?)\s*(ming|min|minga|mingdan)/gi, (_, num) => {
+        return String(Math.round(Number(String(num).replace(",", ".")) * 1000));
+    });
+
+    // Oxirgi raqamni olamiz
+    const nums = s.match(/\d+/g);
+    if (!nums || !nums.length) return 0;
+
+    const n = Number(nums[nums.length - 1]);
+
+    if (n >= 1 && n <= 999) return n * 1000;
     return n;
 }
 

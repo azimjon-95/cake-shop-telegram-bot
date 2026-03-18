@@ -1,6 +1,7 @@
 // services/auth.js
 const Redis = require("ioredis");
 const { REDIS_URL, AUTH_TTL_SECONDS, BOT_PASSWORD } = require("../config");
+const Worker = require("../models/Worker");
 
 // ✅ ioredis: auto reconnect bor, lekin baribir errorlarni ushlaymiz
 const redis = new Redis(REDIS_URL, {
@@ -93,10 +94,21 @@ async function getMode(userId) {
     return (await safeGet(modeKey(userId))) || null;
 }
 
-function checkPassword(text) {
-    return String(text || "").trim() === String(BOT_PASSWORD);
-}
 
+
+// ✅ tgId Worker ichida bo‘lsa parol talab qilinmaydi
+async function checkPassword(userId, text) {
+    const worker = await Worker.findOne({
+        tgId: userId,
+        isActive: true
+    }).lean();
+
+    if (worker) {
+        return true;
+    }
+
+    return String(text || "").trim() === String(BOT_PASSWORD || "").trim();
+}
 module.exports = {
     redis,
     isAuthed,

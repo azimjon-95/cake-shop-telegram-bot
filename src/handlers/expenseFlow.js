@@ -29,6 +29,12 @@ const CAT_LABELS_UZ = {
     master: "Ustaga",
 };
 
+const REQUIRED_DESCRIPTION_CATEGORIES = new Set([
+    "other",   // Proche rasxodlar
+    "repair",  // Ustaga
+    "bank"     // Bank / Soliq to'lovlari
+]);
+
 function getCatUz(key) {
     return CAT_LABELS_UZ[key] || key || "Boshqa";
 }
@@ -319,4 +325,4 @@ async function onExpenseMessage(bot, msg) {
     return false;
 }
 
-module.exports = { startExpense, onExpenseMessage, onExpenseCallback };
+module.exports = { startExpense, onExpenseMessage, onExpenseCallback, REQUIRED_DESCRIPTION_CATEGORIES };

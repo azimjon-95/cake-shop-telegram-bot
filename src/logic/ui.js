@@ -14,7 +14,9 @@ function getUserName(msg) {
     const name = [u.first_name, u.last_name].filter(Boolean).join(" ").trim();
     return name || u.username || String(u.id);
 }
-
+function formatSaleDraft(items = []) {
+    return items.join(", ");
+}
 function itemsToText(items) {
     return items.map(i => `${i.name} x${i.qty} (${formatMoney(i.price)})`).join(", ");
 }
@@ -89,4 +91,5 @@ module.exports = {
     debtPayButton,
     payAmountKeyboard,
     formatDebtCard,
+    formatSaleDraft
 };

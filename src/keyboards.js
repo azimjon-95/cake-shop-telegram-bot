@@ -2,6 +2,7 @@
 const { UZ_MONTHS } = require("./utils/months");
 const { EXPENSE_CATEGORIES } = require("./utils/expenseCategories");
 const Supplier = require("./models/Supplier");
+const { SALE_TEMPLATE_ITEMS } = require("./logic/saleDraft");
 const { formatMoney } = require("./utils/money");
 const { escapeHtml } = require("./logic/ui");
 
@@ -23,7 +24,7 @@ function mainMenuKeyboard() {
             [{ text: "🧁 Sotish" }, { text: "💸 Chiqim" }],
             [{ text: "📌 Qarzlar" }, { text: "🔒 Kasani yopish" }],
             [{ text: "📦 Kirim (Taminot)" }, { text: "📆 Oylik hisobot" }],
-            [{ text: "🎁 Kashback orqali xarid" }, { text: "ℹ️ Yordam" }],   // ✅ yangi
+            [{ text: "🎁 Kashback orqali xarid" }, { text: "📋 Menyu" }],
         ],
         resize_keyboard: true,
     };
@@ -48,6 +49,16 @@ function purchaseEntryKeyboard() {
     };
 }
 
+function menuKeyboard() {
+    return {
+        keyboard: [
+            [{ text: "👥 Foydalanuvchilar" }, { text: "ℹ️ Yordam" }],
+            [{ text: "💸 Chiqimlar hisobot" }],
+            [{ text: "⬅️ Orqaga" }]
+        ],
+        resize_keyboard: true
+    };
+}
 
 function expenseCategoryKeyboard() {
     const rows = [];
@@ -133,7 +144,87 @@ function reportFiltersKeyboard({ year, monthIndex, selectedKeys = [] }) {
     return { inline_keyboard: rows };
 }
 
+
+
+function saleInputModeKeyboard() {
+    return {
+        inline_keyboard: [
+            [{ text: "🧩 Nomlardan tanlash", callback_data: "sale_tpl_open" }]
+        ]
+    };
+}
+
+function saleTemplatesKeyboard(category = "tortlar") {
+    const currentItems = SALE_TEMPLATE_ITEMS[category] || SALE_TEMPLATE_ITEMS.tortlar;
+
+    const categoryRow = [
+        {
+            text: category === "tortlar" ? "✅ 🎂 Tortlar" : "🎂 Tortlar",
+            callback_data: "sale_tpl_cat:tortlar",
+        },
+        {
+            text: category === "perojniylar" ? "✅ 🧁 Perojniylar" : "🧁 Perojniylar",
+            callback_data: "sale_tpl_cat:perojniylar",
+        },
+        {
+            text: category === "ichimliklar" ? "✅ 🥤 Ichimliklar" : "🥤 Ichimliklar",
+            callback_data: "sale_tpl_cat:ichimliklar",
+        },
+        {
+            text: category === "aks" ? "✅ 📦 Aksessuarlar" : "📦 Aksessuarlar",
+            callback_data: "sale_tpl_cat:aks",
+        },
+    ];
+
+    const itemRows = [];
+    for (let i = 0; i < currentItems.length; i += 2) {
+        const row = currentItems.slice(i, i + 2).map((item) => ({
+            text: item.name,
+            callback_data: `sale_tpl_add:${item.name}`,
+        }));
+        itemRows.push(row);
+    }
+
+    return {
+        inline_keyboard: [
+            categoryRow,
+            ...itemRows,
+            [
+                { text: "⬅️ Ortga", callback_data: "sale_tpl_cancel" },
+                { text: "🧹 Tozalash", callback_data: "sale_tpl_clear" },
+            ],
+        ],
+    };
+}
+
+function usersKeyboard() {
+    return {
+        keyboard: [
+            [{ text: "➕ Foydalanuvchi qo‘shish" }],
+            [{ text: "📋 Foydalanuvchilar ro‘yxati" }],
+            [{ text: "⬅️ Orqaga" }],
+        ],
+        resize_keyboard: true,
+    };
+}
+
+function expenseReportCategoryKeyboard() {
+    return {
+        keyboard: [
+            [{ text: "🧾 Proche rasxodlar" }, { text: "🏠 Arenda" }],
+            [{ text: "⚡ Elektr energiya" }, { text: "🏷 Firma (Taminotga)" }],
+            [{ text: "💰 Kapilka" }, { text: "👷 Ishchiga" }],
+            [{ text: "🍽 Abetga" }, { text: "🚕 Taksiga" }],
+            [{ text: "🛠 Ustaga" }, { text: "🏦 Bank / Soliq to‘lovlari" }],
+            [{ text: "📊 Hammasi" }],
+            [{ text: "⬅️ Orqaga" }]
+        ],
+        resize_keyboard: true
+    };
+}
+
 module.exports = {
+    expenseReportCategoryKeyboard,
     monthKeyboard,
     mainMenuKeyboard,
     startKeyboard,
@@ -141,5 +232,9 @@ module.exports = {
     expenseCategoryKeyboard,
     supplierListKeyboard,
     purchaseEntryKeyboard,
-    reportFiltersKeyboard
+    reportFiltersKeyboard,
+    saleInputModeKeyboard,
+    saleTemplatesKeyboard,
+    menuKeyboard,
+    usersKeyboard
 };
