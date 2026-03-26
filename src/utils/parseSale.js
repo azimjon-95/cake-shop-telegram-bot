@@ -50,8 +50,7 @@ function cleanName(segment) {
     s = s.replace(/\b\d+\s*(min|ming|minga|mingdan)\b/gi, " ");
 
     // oxirdagi pul bo‘lib qolgan sonlarni ham tozalaymiz
-    s = s.replace(/\b\d+\b/g, " ");
-
+    s = s.replace(/\b\d+\s*$/g, " ");
     s = s.replace(/[.,-]+/g, " ");
     s = s.replace(/\s+/g, " ").trim();
 
@@ -116,6 +115,10 @@ function splitSegments(input) {
 
     const looksMoney = (t, next) => {
         const s = String(t || "").toLowerCase();
+
+        // ❗ QTY bo‘lsa pul emas
+        if (/\b\d+\s*(ta|dona|x)\b/i.test(s)) return false;
+
         const digits = s.replace(/[^\d]/g, "");
         const n = parseInt(digits || "0", 10) || 0;
 
