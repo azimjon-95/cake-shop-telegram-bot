@@ -4,7 +4,7 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
-
+const { seedWorkers } = require("./seed/workers.seed");
 const { createCustomerBot } = require("./customerBot");
 const { connectDb } = require("./db");
 const { createBot } = require("./bot");
@@ -95,6 +95,7 @@ async function safe(name, fn) {
         // ✅ server listen
         const port = PORT || 6060;
         server.listen(port, () => console.log(`🌐 Backend server: ${port}`));
+        await seedWorkers();
 
         // ✅ Admin bot — kritik emas
         const bot = await safe("createBot()", () => createBot());

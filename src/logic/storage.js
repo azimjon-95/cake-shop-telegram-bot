@@ -107,18 +107,23 @@ async function saveSaleWithTx({ seller, items, phone, noteText }) {
     }
 }
 
-async function saveExpenseWithTx({ spender, title, amount }) {
+async function saveExpenseWithTx({ spender, title, amount, categoryKey, description }) {
     const session = await mongoose.startSession();
 
     const run = async () => {
         const orderNo = await nextOrderNo(session);
 
-        const exp = (await Expense.create([{
+        const expData = {
             orderNo,
             spender,
             title,
             amount
-        }], { session }))[0];
+        };
+
+        if (categoryKey) expData.categoryKey = categoryKey;
+        if (description) expData.description = description;
+
+        const exp = (await Expense.create([expData], { session }))[0];
 
         await addBalance(-amount, session);
         return exp;

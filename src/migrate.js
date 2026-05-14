@@ -1,9 +1,19 @@
 // migrate.js
+require("dotenv").config();
 const { MongoClient } = require("mongodb");
 
-const oldUri = "mongodb+srv://mamutaliyev95_db_user:totlibot123@cluster0.0pgpzpw.mongodb.net/?appName=Cluster0";
-const newUri = "mongodb+srv://mamutaliyev95_db_user:UqUJLkhc0SEHjKpH@cluster0.e5gozpq.mongodb.net/?appName=Cluster0";
-const dbName = "test"; // Eski va yangi bazaning nomi (ikkalasida ham test)
+// ⚠️ .env faylida quyidagilarni sozlang:
+// OLD_MONGO_URI=mongodb+srv://...
+// NEW_MONGO_URI=mongodb+srv://...
+const oldUri = process.env.OLD_MONGO_URI;
+const newUri = process.env.NEW_MONGO_URI;
+
+if (!oldUri || !newUri) {
+    console.error("❌ OLD_MONGO_URI yoki NEW_MONGO_URI .env da yo'q!");
+    process.exit(1);
+}
+
+const dbName = process.env.MIGRATE_DB_NAME || "test";
 
 async function migrate() {
   const oldClient = new MongoClient(oldUri);

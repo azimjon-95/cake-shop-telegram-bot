@@ -300,22 +300,24 @@ async function handleReportFilterNone(bot, q, userId) {
     const allKeys = allExpenseKeys();
     const current = await getSelectedExpenseKeys(userId, year, monthIndex);
 
+    // Agar hech narsa tanlanmagan bo'lsa (allKeys bilan teng), hammasini tanlamay qo'yamiz
+    // Bu yerda "Clear" = hammani o'chirib, faqat birinchi categoryni qoldirish emas,
+    // balki "None" = bo'sh tanlash (filter yo'q = hammasini ko'rsatish bilan teng)
     const same =
         current.length === allKeys.length &&
         allKeys.every((k) => current.includes(k));
 
-    if (same) {
-        await safeAnswer(bot, q, "🧹 Clear (All)");
-        return true;
-    }
+    // Agar hamma allaqachon tanlangan bo'lsa - hammani olib tashlaymiz (toggle)
+    const nextKeys = same ? [] : allKeys;
+    const effectiveKeys = nextKeys.length ? nextKeys : allKeys;
 
-    await setSelectedExpenseKeys(userId, year, monthIndex, allKeys);
+    await setSelectedExpenseKeys(userId, year, monthIndex, effectiveKeys);
 
     const rep = await makeMonthlyReport(year, monthIndex, {
-        expenseCategories: allKeys,
+        expenseCategories: effectiveKeys,
     });
 
-    await editReportMessage(bot, q, rep, year, monthIndex, allKeys);
+    await editReportMessage(bot, q, rep, year, monthIndex, effectiveKeys);
     return true;
 }
 
