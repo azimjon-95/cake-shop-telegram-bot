@@ -6,14 +6,7 @@ const Counter = require("../models/Counter");
 const { mongoose } = require("../db");
 const { nextOrderNo } = require("../services/orderNo");
 
-async function ensureBalance(session) {
-    const doc = await Counter.findOne({ key: "balance" }).session(session || null);
-    if (doc) return doc;
-    const created = await Counter.create([{ key: "balance", value: 0 }], session ? { session } : undefined);
-    return created[0];
-}
-
-// ✅ session ham qabul qiladi
+// ✅ Balansni atomik o'zgartirish (session bilan yoki sessiyasiz)
 async function addBalance(delta, session) {
     const opts = { new: true, upsert: true };
     if (session) opts.session = session;
@@ -23,41 +16,40 @@ async function addBalance(delta, session) {
         { $inc: { value: delta } },
         opts
     );
-
     return doc.value;
 }
 
-// ✅ QAYTIM/DEBT/PAYED ni to‘g‘ri hisoblaydi (DB ga change yozilmaydi)
+// ✅ Balansni olish
+async function getBalance(session) {
+    const doc = await Counter.findOne({ key: "balance" }).session(session || null);
+    return Number(doc?.value || 0);
+}
+
+// ✅ Savdo uchun totallar (qaytim va qarz ham)
 function calcSaleTotals(items) {
-    let total = 0;       // jami savdo
-    let paidGiven = 0;   // mijoz yozgan haqiqiy to‘lovlar yig‘indisi (ortiqchasi ham shu yerda)
+    let total = 0;
+    let paidGiven = 0;
+
     for (const it of items) {
         const qty = Math.max(1, Number(it.qty || 1));
         const price = Math.max(0, Number(it.price || 0));
         const lineTotal = qty * price;
         total += lineTotal;
 
-        // paid bo‘lmasa -> to‘liq to‘langan deb olamiz
-        // paid bo‘lsa -> aynan shu qiymatni qo‘shamiz (0 ham bo‘lishi mumkin)
         const paid = (it.paid === null || it.paid === undefined)
             ? lineTotal
             : Math.max(0, Number(it.paid || 0));
-
         paidGiven += paid;
     }
 
-    // ✅ kassaga kiradigan real tushum: jami summadan oshmasin
     const paidTotal = Math.min(paidGiven, total);
-
-    // ✅ qarz: jami - mijoz bergani (agar kam bo‘lsa)
     const debtTotal = Math.max(0, total - paidGiven);
-
-    // ✅ qaytim: mijoz bergani - jami (agar ortiqcha bo‘lsa)
     const change = Math.max(0, paidGiven - total);
 
     return { total, paidGiven, paidTotal, debtTotal, change };
 }
 
+// ✅ Sotuv saqlash (tranzaksiya ichida)
 async function saveSaleWithTx({ seller, items, phone, noteText }) {
     const session = await mongoose.startSession();
 
@@ -75,7 +67,6 @@ async function saveSaleWithTx({ seller, items, phone, noteText }) {
             debtTotal
         }], { session }))[0];
 
-        // ✅ kassa faqat paidTotal ga oshadi (ortiqcha qaytim DB ga kirmaydi)
         await addBalance(paidTotal, session);
 
         let debtDoc = null;
@@ -92,52 +83,55 @@ async function saveSaleWithTx({ seller, items, phone, noteText }) {
             }], { session }))[0];
         }
 
-        // ✅ change faqat return (DB ga yozilmaydi)
         return { sale, debtDoc, change };
     };
 
     try {
         let out;
-        await session.withTransaction(async () => {
-            out = await run();
-        });
+        await session.withTransaction(async () => { out = await run(); });
         return out;
     } finally {
         try { session.endSession(); } catch { }
     }
 }
 
+// ✅ Chiqim saqlash — balans tekshiruvi bilan
+// Agar balans yetmasa, error tashlaydi
 async function saveExpenseWithTx({ spender, title, amount, categoryKey, description }) {
+    if (!amount || amount <= 0) throw new Error("Summa noto'g'ri");
+
     const session = await mongoose.startSession();
 
     const run = async () => {
+        // ✅ BALANS TEKSHIRUVI
+        const balance = await getBalance(session);
+        if (balance < amount) {
+            throw new Error(`BALANCE_LOW:${balance}`);
+        }
+
         const orderNo = await nextOrderNo(session);
 
         const expData = {
             orderNo,
             spender,
-            title,
+            title: title || "Chiqim",
             amount
         };
-
         if (categoryKey) expData.categoryKey = categoryKey;
         if (description) expData.description = description;
 
         const exp = (await Expense.create([expData], { session }))[0];
-
         await addBalance(-amount, session);
         return exp;
     };
 
     try {
         let out;
-        await session.withTransaction(async () => {
-            out = await run();
-        });
+        await session.withTransaction(async () => { out = await run(); });
         return out;
     } finally {
         try { session.endSession(); } catch { }
     }
 }
 
-module.exports = { addBalance, ensureBalance, saveSaleWithTx, saveExpenseWithTx };
+module.exports = { addBalance, getBalance, saveSaleWithTx, saveExpenseWithTx };

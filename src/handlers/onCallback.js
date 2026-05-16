@@ -17,6 +17,8 @@ const { getUserName, escapeHtml, payAmountKeyboard } = require("../logic/ui");
 const { startDeleteFlow } = require("../logic/deleteFlow");
 
 const { onExpenseCallback } = require("./expenseFlow");
+const { redis: authRedis } = require("../services/auth");
+const { isAdmin, handleBalanceQuickCallback } = require("../logic/balanceEditFlow");
 const { onPurchaseCallback } = require("./purchaseFlow");
 
 const {
@@ -415,6 +417,25 @@ async function onCallback(bot, q) {
             return;
         }
 
+        // ✅ Balans tahrirlash bekor qilish
+        if (data === "bal_edit_cancel") {
+            await authRedis.del(`bal_edit:${userId}`);
+            await safeAnswer(bot, q, "Bekor qilindi");
+            try {
+                await bot.editMessageText("❌ Balans tahrirlash bekor qilindi.", {
+                    chat_id: q.message.chat.id,
+                    message_id: q.message.message_id
+                });
+            } catch { }
+            return;
+        }
+        // ✅ Tezkor balans tugmalari (+10000, -50000...)
+        if (data.startsWith("bal_quick:") && isAdmin(userId)) {
+            const handled = await handleBalanceQuickCallback(bot, q, userId);
+            if (handled) return;
+        }
+
+
         // 1) sale templates
         if (data === "sale_tpl_open") return await handleSaleTemplateOpen(bot, q, userId);
         if (data.startsWith("sale_tpl_cat:")) return await handleSaleTemplateCategory(bot, q, userId);
@@ -469,34 +490,48 @@ async function onCallback(bot, q) {
         if (data.startsWith("rep_refresh:")) return await handleReportRefresh(bot, q, userId);
         if (data.startsWith("rep_f:")) return await handleReportFilterToggle(bot, q, userId);
 
-        if (data.startsWith("del_worker:")) {
-
+        // ✅ Worker faollashtirish/to'xtatish
+        if (data.startsWith("toggle_worker:")) {
             const id = data.split(":")[1];
-
             const worker = await Worker.findById(id);
-
-            if (!worker) {
-                return bot.answerCallbackQuery(q.id, {
-                    text: "Worker topilmadi"
-                });
-            }
-
-            await Worker.deleteOne({ _id: id });
-
-            await bot.answerCallbackQuery(q.id, {
-                text: "Worker o‘chirildi"
-            });
-
-            await bot.editMessageText(
-                `❌ Worker o‘chirildi\n👤 ${worker.fullName}`,
-                {
-                    chat_id: q.message.chat.id,
-                    message_id: q.message.message_id
-                }
-            );
+            if (!worker) { await safeAnswer(bot, q, "Worker topilmadi"); return; }
+            worker.isActive = !worker.isActive;
+            await worker.save();
+            const statusText = worker.isActive ? "🟢 Faollashtirildi" : "🔴 Nofaol qilindi";
+            await safeAnswer(bot, q, statusText);
+            try {
+                await bot.editMessageText(
+                    `👤 <b>${escapeHtml(worker.fullName || "Noma'lum")}</b>\n🆔 <code>${worker.tgId}</code>\n${statusText}`,
+                    {
+                        chat_id: q.message.chat.id,
+                        message_id: q.message.message_id,
+                        parse_mode: "HTML",
+                        reply_markup: { inline_keyboard: [[
+                            { text: worker.isActive ? "🔴 Nofaol qilish" : "🟢 Faollashtirish", callback_data: `toggle_worker:${id}` },
+                            { text: "🗑 O'chirish", callback_data: `del_worker:${id}` }
+                        ]]}
+                    }
+                );
+            } catch { }
+            return;
         }
 
-        if (data === "exp_report_txt") {
+        if (data.startsWith("del_worker:")) {
+            const id = data.split(":")[1];
+            const worker = await Worker.findById(id);
+            if (!worker) { await safeAnswer(bot, q, "Worker topilmadi"); return; }
+            await Worker.deleteOne({ _id: id });
+            await safeAnswer(bot, q, "Worker o'chirildi");
+            try {
+                await bot.editMessageText(
+                    `🗑 <b>O'chirildi:</b> ${escapeHtml(worker.fullName || String(worker.tgId))}`,
+                    { chat_id: q.message.chat.id, message_id: q.message.message_id, parse_mode: "HTML" }
+                );
+            } catch { }
+            return;
+        }
+
+                if (data === "exp_report_txt") {
             const state = await getReportState(q.from.id);
 
             if (!state?.from || !state?.to || !state?.categoryKey) {

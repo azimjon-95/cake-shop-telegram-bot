@@ -9,7 +9,7 @@ const { formatMoney } = require("../utils/money");
 const { getUserName } = require("../logic/ui");
 const { nextOrderNo } = require("../services/orderNo");
 const { sendToGroup } = require("../services/notify");
-const { addBalance } = require("../logic/storage");
+const { addBalance, getBalance } = require("../logic/storage");
 
 const KEY = (userId) => `pur_state:${userId}`;
 
@@ -281,7 +281,17 @@ async function onPurchaseMessage(bot, msg) {
                 description: st.desc || ""
             });
 
-            // Counter balance minus
+            // ✅ Balans tekshiruvi
+            const balance = await getBalance();
+            if (balance < paid) {
+                await redis.del(KEY(userId));
+                await bot.sendMessage(
+                    chatId,
+                    `❌ <b>Balans yetarli emas!</b>\n💰 Balans: <b>${formatMoney(balance)}</b> so'm\n💸 Kerak: <b>${formatMoney(paid)}</b> so'm`,
+                    { parse_mode: "HTML" }
+                );
+                return true;
+            }
             try { await addBalance(-paid); } catch { }
         }
 

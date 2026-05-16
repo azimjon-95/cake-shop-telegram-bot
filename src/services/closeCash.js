@@ -1,5 +1,6 @@
 // closeCash.js - daily cash closing and report generation
 const fs = require("fs");
+const { triggerBackupOnClose } = require("./backupScheduler");
 const path = require("path");
 const Sale = require("../models/Sale");
 const Expense = require("../models/Expense");
@@ -73,6 +74,9 @@ async function closeCashAndMakeReport() {
     const fileName = `hisobot_${new Date().toISOString().slice(0, 10)}.txt`;
     const filePath = path.join(reportDir, fileName);
     fs.writeFileSync(filePath, txtLines.join("\n"), "utf8");
+
+    // ✅ Backup yuborish (kassa yopilganda)
+    triggerBackupOnClose().catch(() => {});
 
     return {
         saleSum,

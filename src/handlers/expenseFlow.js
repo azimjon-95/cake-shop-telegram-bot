@@ -3,6 +3,7 @@ const dayjs = require("dayjs");
 
 const Expense = require("../models/Expense");
 const Supplier = require("../models/Supplier");
+const Counter = require("../models/Counter");
 const { redis } = require("../services/auth");
 
 const { expenseCategoryKeyboard, supplierListKeyboard, mainMenuKeyboard } = require("../keyboards");
@@ -14,45 +15,42 @@ const { sendToGroup } = require("../services/notify");
 
 const KEY = (userId) => `exp_state:${userId}`;
 
-// ✅ faqat shu 2 ta kategoriya uchun description talab qilamiz
-const NEED_DESC = new Set(["other", "master"]);
+const NEED_DESC = new Set(["other", "repair", "bank"]);
+const REQUIRED_DESCRIPTION_CATEGORIES = new Set(["other", "repair", "bank"]);
 
-const CAT_LABELS_UZ = {
-    other: "Proche rasxodlar",
-    rent: "Arenda",
-    electric: "Elektr energiya",
-    supplier: "Firma (Taminotga)",
-    cashbox: "Kapilka",
-    worker: "Ishchiga",
-    lunch: "Abetga",
-    taxi: "Taksiga",
-    master: "Ustaga",
+const CAT_LABELS = {
+    other:       "Proche rasxodlar",
+    rent:        "Arenda",
+    electricity: "Elektr energiya",
+    supplier:    "Firma (Taminotga)",
+    cash:        "Kapilka",
+    worker:      "Ishchiga",
+    food:        "Abetga",
+    taxi:        "Taksiga",
+    repair:      "Ustaga",
+    bank:        "Bank / Soliq to'lovlari",
 };
 
-const REQUIRED_DESCRIPTION_CATEGORIES = new Set([
-    "other",   // Proche rasxodlar
-    "repair",  // Ustaga
-    "bank"     // Bank / Soliq to'lovlari
-]);
+function getCatLabel(key) {
+    return CAT_LABELS[key] || key || "Boshqa";
+}
 
-function getCatUz(key) {
-    return CAT_LABELS_UZ[key] || key || "Boshqa";
+async function getBalance() {
+    const doc = await Counter.findOne({ key: "balance" }).lean();
+    return Number(doc?.value || 0);
 }
 
 function expenseGroupText(exp) {
-    const who = exp?.spender?.tgName || "-";
+    const who    = exp?.spender?.tgName || "-";
     const catKey = exp?.categoryKey || "other";
-    const catUz = getCatUz(catKey);
-
-    const title = (exp?.title || "").trim();
-    const amount = exp?.amount ? formatMoney(exp.amount) : "0";
-    const time = dayjs(exp.createdAt || new Date()).format("YYYY-MM-DD HH:mm");
-
-    const NEED_DESC = new Set(["other", "master"]); // faqat shu 2 tasida desc ko'rinsin
+    const catUz  = getCatLabel(catKey);
+    const title  = String(exp?.title || "").trim();
+    const amount = formatMoney(exp?.amount || 0);
+    const time   = dayjs(exp.createdAt || new Date()).format("YYYY-MM-DD HH:mm");
 
     let nima = escapeHtml(catUz);
-    if (NEED_DESC.has(catKey)) {
-        nima = `${escapeHtml(catUz)} | ${escapeHtml(title || "-")}`;
+    if (NEED_DESC.has(catKey) && title) {
+        nima = `${escapeHtml(catUz)} | ${escapeHtml(title)}`;
     }
 
     return (
@@ -64,20 +62,49 @@ function expenseGroupText(exp) {
     );
 }
 
+async function saveExpenseSafe({ spender, title, amount, categoryKey, description, supplierId }) {
+    const balance = await getBalance();
+    if (balance < amount) {
+        return {
+            ok: false,
+            reason:
+                `❌ <b>Balans yetarli emas!</b>\n` +
+                `🏦 Joriy balans: <b>${formatMoney(balance)}</b> so'm\n` +
+                `💰 Kerakli: <b>${formatMoney(amount)}</b> so'm\n\n` +
+                `Avval kassaga pul kiriting yoki summani kamaytiring.`
+        };
+    }
 
+    const expData = {
+        orderNo:     await nextOrderNo(null),
+        spender,
+        title:       title || getCatLabel(categoryKey || "other"),
+        amount,
+        categoryKey: categoryKey || "other",
+        description: description || "",
+    };
+    if (supplierId) expData.supplierId = supplierId;
+
+    const exp = await Expense.create(expData);
+    await addBalance(-amount, null);
+
+    return { ok: true, exp };
+}
 
 async function startExpense(bot, chatId, userId) {
     await redis.set(KEY(userId), JSON.stringify({ step: "pick_category" }), "EX", 900);
-    await bot.sendMessage(chatId, "💸 <b>Chiqim</b>\nKategoriya tanlang:", {
-        parse_mode: "HTML",
-        reply_markup: expenseCategoryKeyboard()
-    });
+    const balance = await getBalance();
+    await bot.sendMessage(
+        chatId,
+        `💸 <b>Chiqim</b>\n🏦 Joriy balans: <b>${formatMoney(balance)}</b> so'm\n\nKategoriya tanlang:`,
+        { parse_mode: "HTML", reply_markup: expenseCategoryKeyboard() }
+    );
 }
 
 async function onExpenseCallback(bot, q, seller) {
     try { await bot.answerCallbackQuery(q.id); } catch { }
 
-    const data = q.data || "";
+    const data   = q.data || "";
     const chatId = q.message.chat.id;
 
     if (data === "exp_cancel") {
@@ -86,44 +113,43 @@ async function onExpenseCallback(bot, q, seller) {
         return true;
     }
 
-    // category select
     if (data.startsWith("exp_cat:")) {
         const cat = data.split(":")[1];
 
-        // ✅ Firma (Taminotga) -> Supplier.debt > 0 bo'lganlar
         if (cat === "supplier") {
             await redis.set(
                 KEY(seller.tgId),
                 JSON.stringify({ step: "pick_supplier", categoryKey: "supplier", createdBy: seller }),
-                "EX",
-                900
+                "EX", 900
             );
-
             await bot.sendMessage(chatId, "🏭 Qarzdorlik mavjud firmalar:", {
                 reply_markup: await supplierListKeyboard({
-                    onlyWithDebt: true,
+                    onlyWithDebt:   true,
                     selectCbPrefix: "exp_sup_select",
-                    backCb: "exp_cancel"
+                    backCb:         "exp_cancel"
                 })
             });
             return true;
         }
 
-        // ✅ oddiy category -> amount so'raymiz
         await redis.set(
             KEY(seller.tgId),
             JSON.stringify({ step: "amount", categoryKey: cat, createdBy: seller }),
-            "EX",
-            900
+            "EX", 900
         );
-        await bot.sendMessage(chatId, "✍️ Summani yozing (masalan: 50000):");
+
+        const balance = await getBalance();
+        await bot.sendMessage(
+            chatId,
+            `✍️ Summani yozing (masalan: 50000)\n🏦 Joriy balans: <b>${formatMoney(balance)}</b> so'm`,
+            { parse_mode: "HTML" }
+        );
         return true;
     }
 
-    // ✅ supplier select
     if (data.startsWith("exp_sup_select:")) {
         const supId = data.split(":")[1];
-        const sup = await Supplier.findById(supId);
+        const sup   = await Supplier.findById(supId);
         if (!sup) {
             await bot.sendMessage(chatId, "❌ Firma topilmadi.");
             return true;
@@ -131,25 +157,28 @@ async function onExpenseCallback(bot, q, seller) {
 
         const remain = Number(sup.debt || 0);
         if (remain <= 0) {
-            await bot.sendMessage(chatId, "✅ Bu firmada qarz yo‘q.");
+            await bot.sendMessage(chatId, "✅ Bu firmada qarz yo'q.");
             return true;
         }
 
         await redis.set(
             KEY(seller.tgId),
             JSON.stringify({
-                step: "supplier_pay_amount",
+                step:        "supplier_pay_amount",
                 categoryKey: "supplier",
-                supplierId: String(sup._id),
-                createdBy: seller
+                supplierId:  String(sup._id),
+                createdBy:   seller
             }),
-            "EX",
-            900
+            "EX", 900
         );
 
+        const balance = await getBalance();
         await bot.sendMessage(
             chatId,
-            `🏭 Firma: <b>${escapeHtml(sup.name)}</b>\n💳 Qarz: <b>${formatMoney(remain)}</b> so'm\n✍️ Qancha to‘laysiz?`,
+            `🏭 Firma: <b>${escapeHtml(sup.name)}</b>\n` +
+            `💳 Firma qarzi: <b>${formatMoney(remain)}</b> so'm\n` +
+            `🏦 Kassa balansi: <b>${formatMoney(balance)}</b> so'm\n` +
+            `✍️ Qancha to'laysiz?`,
             { parse_mode: "HTML" }
         );
         return true;
@@ -161,7 +190,7 @@ async function onExpenseCallback(bot, q, seller) {
 async function onExpenseMessage(bot, msg) {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const text = String(msg.text || "").trim();
+    const text   = String(msg.text || "").trim();
     if (!userId || !text) return false;
 
     const stRaw = await redis.get(KEY(userId));
@@ -174,17 +203,27 @@ async function onExpenseMessage(bot, msg) {
         return false;
     }
 
-    // 1) amount
     if (st.step === "amount") {
-        const amount = parseInt(text.replace(/[^\d]/g, ""), 10) || 0;
+        const amount = parseInt(text.replace(/[^0-9]/g, ""), 10) || 0;
         if (amount <= 0) {
-            await bot.sendMessage(chatId, "❌ Summa noto‘g‘ri. Masalan: 50000");
+            await bot.sendMessage(chatId, "❌ Summa noto'g'ri. Masalan: 50000");
+            return true;
+        }
+
+        const balance = await getBalance();
+        if (balance < amount) {
+            await bot.sendMessage(
+                chatId,
+                `❌ <b>Balans yetarli emas!</b>\n` +
+                `🏦 Joriy balans: <b>${formatMoney(balance)}</b> so'm\n` +
+                `💰 Kerakli: <b>${formatMoney(amount)}</b> so'm`,
+                { parse_mode: "HTML" }
+            );
             return true;
         }
 
         st.amount = amount;
 
-        // ✅ faqat other/master bo'lsa desc so'raymiz
         if (NEED_DESC.has(st.categoryKey)) {
             st.step = "desc";
             await redis.set(KEY(userId), JSON.stringify(st), "EX", 900);
@@ -192,30 +231,30 @@ async function onExpenseMessage(bot, msg) {
             return true;
         }
 
-        // ✅ qolgan kategoriyalar: desc so'ramaymiz, avtomatik "-" bilan saqlaymiz
         const spender = st.createdBy || { tgId: userId, tgName: getUserName(msg) };
-        const exp = await Expense.create({
-            orderNo: await nextOrderNo(null),
+        const result  = await saveExpenseSafe({
             spender,
-            title: "Chiqim",             // default title
-            amount: Number(st.amount || 0),
-            categoryKey: st.categoryKey || "other",
-            description: ""              // default desc
+            title:       getCatLabel(st.categoryKey),
+            amount,
+            categoryKey: st.categoryKey,
+            description: ""
         });
 
-        try { await addBalance(-exp.amount, null); } catch { }
+        if (!result.ok) {
+            await bot.sendMessage(chatId, result.reason, { parse_mode: "HTML" });
+            return true;
+        }
 
-        await sendToGroup(bot, expenseGroupText(exp), { parse_mode: "HTML" });
-
+        await sendToGroup(bot, expenseGroupText(result.exp));
         await redis.del(KEY(userId));
         await bot.sendMessage(
             chatId,
-            `✅ Chiqim saqlandi.\n🆔 ID: <b>${exp.orderNo}</b>`,
+            `✅ Chiqim saqlandi.\n🆔 ID: <b>${result.exp.orderNo}</b>`,
             {
                 parse_mode: "HTML",
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: "🗑 O‘chirish (Chiqim)", callback_data: `del_exp:${exp._id}` }],
+                        [{ text: "🗑 O'chirish (Chiqim)", callback_data: `del_exp:${result.exp._id}` }]
                     ]
                 }
             }
@@ -223,7 +262,6 @@ async function onExpenseMessage(bot, msg) {
         return true;
     }
 
-    // 2) desc (faqat other/master)
     if (st.step === "desc") {
         const desc = text.trim();
         if (desc.length < 2) {
@@ -232,29 +270,29 @@ async function onExpenseMessage(bot, msg) {
         }
 
         const spender = st.createdBy || { tgId: userId, tgName: getUserName(msg) };
-
-        const exp = await Expense.create({
-            orderNo: await nextOrderNo(null),
+        const result  = await saveExpenseSafe({
             spender,
-            title: desc, // ✅ nomi desc bo'ladi
-            amount: Number(st.amount || 0),
-            categoryKey: st.categoryKey || "other",
+            title:       desc,
+            amount:      Number(st.amount || 0),
+            categoryKey: st.categoryKey,
             description: desc
         });
 
-        try { await addBalance(-exp.amount, null); } catch { }
+        if (!result.ok) {
+            await bot.sendMessage(chatId, result.reason, { parse_mode: "HTML" });
+            return true;
+        }
 
-        await sendToGroup(bot, expenseGroupText(exp), { parse_mode: "HTML" });
-
+        await sendToGroup(bot, expenseGroupText(result.exp));
         await redis.del(KEY(userId));
         await bot.sendMessage(
             chatId,
-            `✅ Chiqim saqlandi.\n🆔 ID: <b>${exp.orderNo}</b>`,
+            `✅ Chiqim saqlandi.\n🆔 ID: <b>${result.exp.orderNo}</b>`,
             {
                 parse_mode: "HTML",
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: "🗑 O‘chirish (Chiqim)", callback_data: `del_exp:${exp._id}` }],
+                        [{ text: "🗑 O'chirish (Chiqim)", callback_data: `del_exp:${result.exp._id}` }]
                     ]
                 }
             }
@@ -262,11 +300,10 @@ async function onExpenseMessage(bot, msg) {
         return true;
     }
 
-    // 3) supplier pay amount -> Supplier.debt kamayadi (desc yo'q)
     if (st.step === "supplier_pay_amount") {
-        const amount = parseInt(text.replace(/[^\d]/g, ""), 10) || 0;
+        const amount = parseInt(text.replace(/[^0-9]/g, ""), 10) || 0;
         if (amount <= 0) {
-            await bot.sendMessage(chatId, "❌ Summa noto‘g‘ri. Masalan: 100000");
+            await bot.sendMessage(chatId, "❌ Summa noto'g'ri. Masalan: 100000");
             return true;
         }
 
@@ -280,41 +317,41 @@ async function onExpenseMessage(bot, msg) {
         const remain = Number(sup.debt || 0);
         if (remain <= 0) {
             await redis.del(KEY(userId));
-            await bot.sendMessage(chatId, "✅ Bu firmada qarz yo‘q.");
+            await bot.sendMessage(chatId, "✅ Bu firmada qarz yo'q.");
             return true;
         }
 
-        const pay = Math.min(amount, remain);
+        const pay     = Math.min(amount, remain);
         const spender = st.createdBy || { tgId: userId, tgName: getUserName(msg) };
 
-        const exp = await Expense.create({
-            orderNo: await nextOrderNo(null),
+        const result = await saveExpenseSafe({
             spender,
-            title: `Firma to‘lovi: ${sup.name}`,
-            amount: pay,
+            title:       `Firma to'lovi: ${sup.name}`,
+            amount:      pay,
             categoryKey: "supplier",
-            supplierId: sup._id,
+            supplierId:  sup._id,
             description: ""
         });
 
-        try { await addBalance(-pay, null); } catch { }
+        if (!result.ok) {
+            await bot.sendMessage(chatId, result.reason, { parse_mode: "HTML" });
+            return true;
+        }
 
         sup.debt = Math.max(0, remain - pay);
         await sup.save();
 
-        await sendToGroup(bot, expenseGroupText(exp), { parse_mode: "HTML" });
-
+        await sendToGroup(bot, expenseGroupText(result.exp));
         await redis.del(KEY(userId));
-
         await bot.sendMessage(
             chatId,
-            `✅ To‘landi: <b>${formatMoney(pay)}</b> so'm\n💳 Qolgan qarz: <b>${formatMoney(sup.debt)}</b> so'm`,
+            `✅ To'landi: <b>${formatMoney(pay)}</b> so'm\n` +
+            `💳 Firmada qolgan qarz: <b>${formatMoney(sup.debt)}</b> so'm`,
             {
                 parse_mode: "HTML",
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: "🗑 O‘chirish (Chiqim)", callback_data: `del_exp:${exp._id}` }],
-                        [{ text: "⬅️ Menyu", callback_data: "exp_cancel" }]
+                        [{ text: "🗑 O'chirish (Chiqim)", callback_data: `del_exp:${result.exp._id}` }]
                     ]
                 }
             }
@@ -325,4 +362,9 @@ async function onExpenseMessage(bot, msg) {
     return false;
 }
 
-module.exports = { startExpense, onExpenseMessage, onExpenseCallback, REQUIRED_DESCRIPTION_CATEGORIES };
+module.exports = {
+    startExpense,
+    onExpenseMessage,
+    onExpenseCallback,
+    REQUIRED_DESCRIPTION_CATEGORIES
+};

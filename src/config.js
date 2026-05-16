@@ -25,4 +25,8 @@ module.exports = {
     GROUP_INVITE_LINK: process.env.GROUP_INVITE_LINK || "",
     GROUP_ID: process.env.GROUP_ID || "",
     WEBAPP_ALLOWED_TG_IDS: allowedIds,
+    // Admin — faqat shu tgId balansni tahrirlayoladi
+    ADMIN_TG_ID: Number(process.env.ADMIN_TG_ID || 0),
+    // Backup gruppa chat ID (BACKUP_CHAT_ID)
+    BACKUP_CHAT_ID: process.env.BACKUP_CHAT_ID ? String(process.env.BACKUP_CHAT_ID) : null,
 };
