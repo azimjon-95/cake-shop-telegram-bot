@@ -16,6 +16,10 @@ const Customer = require("../models/Customer");
 
 const { verifyTgWebApp } = require("../middlewares/verifyTgWebApp");
 const { allowWebAppUsers } = require("../middlewares/allowWebAppUsers");
+const { saveSaleWithTx } = require("../logic/storage");
+const { saveExpenseWithTx } = require("../logic/storage");
+const Worker = require("../models/Worker");
+const { ADMIN_TG_ID } = require("../config");
 
 // ✅ from/to parse helper (ISO yoki date string)
 // Agar from/to berilmasa => bugun (Toshkent TZ)
@@ -254,6 +258,158 @@ function webappRoutes({ botToken, customerBotToken, io }) {
         }
     });
 
+
+
+    // =========================
+    // 🏓 PING — offline aniqlash uchun
+    // HEAD /api/webapp/ping
+    // =========================
+    r.head("/ping", (req, res) => res.sendStatus(200));
+    r.get("/ping",  (req, res) => res.json({ ok: true, ts: Date.now() }));
+
+    // =========================
+    // 💾 OFFLINE SALE — internet qaytganda sync
+    // POST /api/webapp/offline/sale
+    // Body: { items, paidTotal, total, debtTotal, offlineNote, offlineId }
+    // =========================
+    r.post("/offline/sale", verifyTgWebApp(BOT_TOKEN), allowWebAppUsers, async (req, res) => {
+        try {
+            const { items, paidTotal, total, debtTotal, offlineNote, offlineId } = req.body;
+            const seller = {
+                tgId: req.tgUser?.id,
+                tgName: req.tgUser?.first_name || req.worker?.fullName || "Offline"
+            };
+
+            if (!items?.length) return res.status(400).json({ ok: false, error: "items required" });
+
+            const result = await saveSaleWithTx({
+                seller,
+                items,
+                phone: null,
+                noteText: offlineNote || ""
+            });
+
+            // Socket event
+            if (global.io) global.io.emit("refresh");
+
+            return res.json({
+                ok: true,
+                data: {
+                    sale: result.sale,
+                    offlineId,          // client o'z id sini qaytarib oladi
+                    serverOrderNo: result.sale.orderNo
+                }
+            });
+        } catch (e) {
+            console.error("[offline/sale]", e.message);
+            if (String(e.message).startsWith("BALANCE_LOW:")) {
+                return res.status(402).json({ ok: false, error: "BALANCE_LOW", balance: Number(e.message.split(":")[1] || 0) });
+            }
+            return res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    // =========================
+    // 💾 OFFLINE EXPENSE — internet qaytganda sync
+    // POST /api/webapp/offline/expense
+    // Body: { title, amount, categoryKey, offlineNote, offlineId }
+    // =========================
+    r.post("/offline/expense", verifyTgWebApp(BOT_TOKEN), allowWebAppUsers, async (req, res) => {
+        try {
+            const { title, amount, categoryKey, offlineNote, offlineId } = req.body;
+            const spender = {
+                tgId: req.tgUser?.id,
+                tgName: req.tgUser?.first_name || req.worker?.fullName || "Offline"
+            };
+
+            if (!amount || amount <= 0) return res.status(400).json({ ok: false, error: "amount required" });
+
+            const exp = await saveExpenseWithTx({
+                spender,
+                title: title || categoryKey || "Chiqim",
+                amount: Number(amount),
+                categoryKey: categoryKey || "other",
+                description: offlineNote || ""
+            });
+
+            if (global.io) global.io.emit("refresh");
+
+            return res.json({ ok: true, data: { expense: exp, offlineId } });
+        } catch (e) {
+            console.error("[offline/expense]", e.message);
+            if (String(e.message).startsWith("BALANCE_LOW:")) {
+                return res.status(402).json({ ok: false, error: "BALANCE_LOW", balance: Number(e.message.split(":")[1] || 0) });
+            }
+            return res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    // =========================
+    // 📦 OFFLINE BATCH SYNC — bir vaqtda ko'p item
+    // POST /api/webapp/offline/sync
+    // Body: { items: [ {type:"sale"|"expense", payload, offlineId} ] }
+    // =========================
+    r.post("/offline/sync", verifyTgWebApp(BOT_TOKEN), allowWebAppUsers, async (req, res) => {
+        const { items } = req.body;
+        if (!Array.isArray(items) || !items.length) {
+            return res.status(400).json({ ok: false, error: "items array required" });
+        }
+
+        const results = [];
+        for (const item of items.slice(0, 50)) { // max 50 ta
+            try {
+                let result;
+                const seller = {
+                    tgId: req.tgUser?.id,
+                    tgName: req.tgUser?.first_name || req.worker?.fullName || "Offline"
+                };
+
+                if (item.type === "sale") {
+                    const r = await saveSaleWithTx({
+                        seller,
+                        items: item.payload.items || [],
+                        phone: item.payload.phone || null,
+                        noteText: item.payload.offlineNote || ""
+                    });
+                    result = { ok: true, offlineId: item.offlineId, orderNo: r.sale.orderNo };
+                } else if (item.type === "expense") {
+                    const e = await saveExpenseWithTx({
+                        spender: seller,
+                        title: item.payload.title || "Chiqim",
+                        amount: Number(item.payload.amount || 0),
+                        categoryKey: item.payload.categoryKey || "other",
+                        description: item.payload.offlineNote || ""
+                    });
+                    result = { ok: true, offlineId: item.offlineId, orderNo: e.orderNo };
+                } else {
+                    result = { ok: false, offlineId: item.offlineId, error: "unknown type" };
+                }
+                results.push(result);
+            } catch (e) {
+                results.push({ ok: false, offlineId: item.offlineId, error: e.message });
+            }
+            // Har bir item orasida 50ms — DB overload oldini olish
+            await new Promise(r => setTimeout(r, 50));
+        }
+
+        if (global.io) global.io.emit("refresh");
+
+        return res.json({ ok: true, results });
+    });
+
+    // =========================
+    // 🏥 HEALTH — server va DB holati
+    // GET /api/webapp/health
+    // =========================
+    r.get("/health", async (req, res) => {
+        try {
+            const { mongoose } = require("../db");
+            const dbState = mongoose.connection.readyState; // 1=connected
+            return res.json({ ok: true, db: dbState === 1 ? "connected" : "disconnected", ts: Date.now() });
+        } catch {
+            return res.json({ ok: false, ts: Date.now() });
+        }
+    });
 
     r.use("/customer", customer);
 
