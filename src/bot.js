@@ -1,4 +1,5 @@
-const { scheduleDailyAt2330 } = require('./services/backupScheduler');
+const { scheduleDailyAt2330 }    = require('./services/backupScheduler');
+const { scheduleStatsNotifier }  = require('./services/statsNotifier');
 // src/bot.js
 require("./bootstrap/guard");
 
@@ -136,11 +137,11 @@ async function createBot() {
     const bot = createSafePollingBot(BOT_TOKEN, "TOTLI_BOT");
 
     ensurePinnedMiniAppLinkInGroup(bot).catch(() => { });
-    scheduleDailyAt2330(bot); // ✅ Kunlik backup scheduler
+    scheduleDailyAt2330(bot);    // ✅ Kunlik backup
+    scheduleStatsNotifier(bot);  // ✅ Kunlik 2x statistika SMS
 
     bot.onText(/\/start/, async () => {
         ensurePinnedMiniAppLinkInGroup(bot).catch(() => { });
-    scheduleDailyAt2330(bot); // ✅ Kunlik backup scheduler
     });
 
     bot.on("callback_query", (q) => safeHandleCallback(bot, q));

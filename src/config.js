@@ -29,4 +29,8 @@ module.exports = {
     ADMIN_TG_ID: Number(process.env.ADMIN_TG_ID || 0),
     // Backup gruppa chat ID (BACKUP_CHAT_ID)
     BACKUP_CHAT_ID: process.env.BACKUP_CHAT_ID ? String(process.env.BACKUP_CHAT_ID) : null,
+    // Statistika SMS yuboriladigan guruh (bo'sh bo'lsa GROUP_CHAT_ID ishlatiladi)
+    // Tort pishiruvchi (Zubayda) Telegram ID — unga alohida kun rejasi yuboriladi
+    BAKER_TG_ID: process.env.BAKER_TG_ID ? String(process.env.BAKER_TG_ID) : null,
+    STATS_CHAT_ID: process.env.STATS_CHAT_ID ? String(process.env.STATS_CHAT_ID) : (process.env.GROUP_CHAT_ID ? String(process.env.GROUP_CHAT_ID) : null),
 };
