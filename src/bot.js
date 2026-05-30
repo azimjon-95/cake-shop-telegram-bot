@@ -18,11 +18,15 @@ const STARTAPP_PAYLOAD = "totli";
 function createSafePollingBot(token, name) {
     const bot = new TelegramBot(token, {
         polling: {
-            interval: 300,
+            interval: 500,
             autoStart: true,
-            params: { timeout: 60 },
+            params: { timeout: 30, allowed_updates: ["message","callback_query","inline_query"] },
         },
-        request: { timeout: 60000 },
+        request: {
+            timeout: 30000,
+            // Har 3 urinishdan keyin 5 sekund kutish
+            agentOptions: { keepAlive: true, keepAliveMsecs: 15000 },
+        },
     });
 
     bot.deleteWebHook({ drop_pending_updates: true }).catch(() => { });
@@ -44,9 +48,29 @@ function createSafePollingBot(token, name) {
             msg.includes("ENOTFOUND");
 
         if (isNet) {
-            console.warn("[bot] Network error, restarting polling in 3s...");
+            // Exponential backoff: 3s → 6s → 12s (max 30s)
+            const delay = Math.min(30000, 3000 * Math.pow(2, (global._pollRetry = (global._pollRetry||0)+1) - 1));
+            console.warn(`[bot] Network error, restarting in ${delay/1000}s...`);
+            // Internet uzildi — guruhga xabar (faqat birinchi marta)
+            if (global._pollRetry === 1) {
+                const waBtns = webAppButtons(WEBAPP_URL);
+                bot.sendMessage(GROUP_CHAT_ID,
+                    '⚠️ <b>Internet muammo!</b> Bot vaqtincha javob bermaydi.\n\n'
+                    + '📵 Offline rejimni oching — sotuv to\'xtatilmaydi!',
+                    { parse_mode: 'HTML', reply_markup: waBtns || undefined }
+                ).catch(() => {});
+            }
+
             try { await bot.stopPolling(); } catch { }
-            setTimeout(() => bot.startPolling().catch(() => { }), 3000);
+            setTimeout(() => {
+                bot.startPolling().then(() => {
+                    global._pollRetry = 0;
+                    bot.sendMessage(GROUP_CHAT_ID,
+                        '✅ <b>Internet qaytdi!</b> Bot yana ishlayapti.\nOffline sotuvlar avtomatik sync bo\'ladi.',
+                        { parse_mode: 'HTML' }
+                    ).catch(() => {});
+                }).catch(() => {});
+            }, delay);
         }
     });
 
@@ -124,10 +148,18 @@ async function safeHandleCallback(bot, q) {
     try {
         await onCallback(bot, q);
     } catch (e) {
-        console.error("[onCallback error]", e?.message || e);
-        try {
-            await bot.answerCallbackQuery(q.id, { text: "⚠️ Xatolik yuz berdi", show_alert: true });
-        } catch { }
+        const msg = e?.message || String(e);
+        const isTimeout = msg.includes("ETIMEDOUT") || msg.includes("ECONNRESET") ||
+                          msg.includes("socket hang up") || msg.includes("EAI_AGAIN");
+
+        console.error("[onCallback error]", msg);
+
+        // Timeout bo'lsa — qayta urinmaymiz (internet yo'q)
+        if (!isTimeout) {
+            try {
+                await bot.answerCallbackQuery(q.id, { text: "⚠️ Xatolik, qayta bosing", show_alert: false });
+            } catch { }
+        }
     }
 }
 

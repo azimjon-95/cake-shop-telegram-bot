@@ -5,8 +5,9 @@ const Worker = require("../models/Worker");
 
 const {
     mainMenuKeyboard, startKeyboard, monthKeyboard,
-    saleInputModeKeyboard, menuKeyboard, usersKeyboard, addWorkerKeyboard
+    saleInputModeKeyboard, menuKeyboard, usersKeyboard, addWorkerKeyboard, webAppButtons
 } = require("../keyboards");
+const { WEBAPP_URL } = require("../config");
 
 const { ADMIN_TG_ID } = require("../config");
 const { isAuthed, setMode, getMode, redis }   = require("../services/auth");
@@ -212,7 +213,15 @@ async function onMessage(bot, msg) {
         return bot.sendMessage(chatId, helpText(), { parse_mode: "HTML" });
     }
     if (text === "📋 Menyu") {
-        return bot.sendMessage(chatId, "📋 Qo'shimcha menyu:", { reply_markup: menuKeyboard(admin) });
+        await bot.sendMessage(chatId, "📋 Qo'shimcha menyu:", { reply_markup: menuKeyboard(admin) });
+
+        // WebApp tugmalari
+        const waBtns = webAppButtons(WEBAPP_URL);
+        if (waBtns) {
+            const waText = "📱 Ilova: Dashboard va Offline rejim!\nOffline rejimni yuklab oling.";
+            await bot.sendMessage(chatId, waText, { reply_markup: waBtns });
+        }
+        return;
     }
     if (text === "⬅️ Orqaga") {
         await setMode(userId, "sale");

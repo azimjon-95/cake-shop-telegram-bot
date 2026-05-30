@@ -18,15 +18,30 @@ function monthKeyboard(year) {
     return { inline_keyboard: rows };
 }
 
-function mainMenuKeyboard() {
+function mainMenuKeyboard(waUrl) {
+    const keyboard = [
+        [{ text: "🧁 Sotish" }, { text: "💸 Chiqim" }],
+        [{ text: "📌 Qarzlar" }, { text: "🔒 Kasani yopish" }],
+        [{ text: "📦 Kirim (Taminot)" }, { text: "📆 Oylik hisobot" }],
+        [{ text: "🎁 Kashback orqali xarid" }, { text: "📋 Menyu" }],
+    ];
+    return { keyboard, resize_keyboard: true };
+}
+
+// Inline webapp tugmalar (🌐 WebApp + 📵 Offline)
+function webAppButtons(waUrl) {
+    if (!waUrl) return null;
     return {
-        keyboard: [
-            [{ text: "🧁 Sotish" }, { text: "💸 Chiqim" }],
-            [{ text: "📌 Qarzlar" }, { text: "🔒 Kasani yopish" }],
-            [{ text: "📦 Kirim (Taminot)" }, { text: "📆 Oylik hisobot" }],
-            [{ text: "🎁 Kashback orqali xarid" }, { text: "📋 Menyu" }],
-        ],
-        resize_keyboard: true,
+        inline_keyboard: [[
+            {
+                text: "🌐 Dashboard",
+                web_app: { url: waUrl }
+            },
+            {
+                text: "📵 Offline rejim",
+                web_app: { url: `${waUrl}?offline=1` }
+            }
+        ]]
     };
 }
 
@@ -210,6 +225,7 @@ function expenseReportCategoryKeyboard() {
 }
 
 module.exports = {
+    webAppButtons,
     expenseReportCategoryKeyboard,
     monthKeyboard,
     mainMenuKeyboard,

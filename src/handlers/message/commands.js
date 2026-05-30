@@ -1,4 +1,5 @@
-const { mainMenuKeyboard, startKeyboard } = require("../../keyboards");
+const { mainMenuKeyboard, startKeyboard, webAppButtons } = require("../../keyboards");
+const { WEBAPP_URL } = require("../../config");
 const { isAuthed, setAuthed, setMode, checkPassword, redis } = require("../../services/auth");
 
 async function handleTopCommands(bot, msg) {
@@ -28,11 +29,27 @@ async function handleTopCommands(bot, msg) {
         const ok = await isAuthed(userId);
         if (ok) {
             await setMode(userId, "sale");
+            const waUrl  = WEBAPP_URL;
+            const waBtns = webAppButtons(waUrl);
+
             await bot.sendMessage(
                 chatId,
-                "🧁 Bot tayyor. Sotuvni yozishingiz yoki voice yuborishingiz mumkin.",
+                "🧁 Bot tayyor!",
                 { reply_markup: mainMenuKeyboard() }
             );
+
+            // WebApp va Offline tugmalari
+            if (waBtns) {
+                const waText =
+                    "📱 Ilova:\n" +
+                    "• Dashboard — real-time hisobot\n" +
+                    "• Offline rejim — internet uzilsa ham sotuv\n\n" +
+                    "Offline rejimni yuklab oling!";
+                await bot.sendMessage(chatId, waText, {
+                    parse_mode: "HTML",
+                    reply_markup: waBtns,
+                });
+            }
             return true;
         }
 
