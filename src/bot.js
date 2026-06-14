@@ -9,7 +9,7 @@ const dns = require("dns");
 dns.setDefaultResultOrder("ipv4first");
 
 const TelegramBot = require("node-telegram-bot-api");
-const { BOT_TOKEN, GROUP_CHAT_ID } = require("./config");
+const { BOT_TOKEN, GROUP_CHAT_ID, WEBAPP_URL } = require("./config");
 const { onCallback } = require("./handlers/onCallback");
 const { onMessage } = require("./handlers/onMessage");
 const { saveSeenUser } = require("./logic/saveSeenUser");
@@ -109,18 +109,22 @@ async function ensurePinnedMiniAppLinkInGroup(bot) {
             await bot.unpinChatMessage(groupId, { message_id: pinned.message_id }).catch(() => { });
         }
 
+        const printUrl = WEBAPP_URL
+            ? String(WEBAPP_URL).replace(/\/+$/, "") + "/print"
+            : null;
+
         const text =
-            "📊 <b>TOTLI Hisobotlar</b>\n\n" +
-            "Bugungi tushum, chiqim va balans holatini onlayn kuzating.\n" +
-            "👇 Pastdagi tugmani bosing:";
+            "📊 <b>TOTLI — Boshqaruv markazi</b>\n\n" +
+            "👇 Kerakli tugmani bosing:";
+
+        const kb = [[{ text: "📊 Dashboard (Mini App)", url: miniAppDeepLink }]];
+        if (printUrl) {
+            kb.push([{ text: "🖨 Print Station — Chek chiqarish", web_app: { url: printUrl } }]);
+        }
 
         const sent = await bot.sendMessage(groupId, text, {
             parse_mode: "HTML",
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "📊 Hisobotlarni ko'rish (Mini App)", url: miniAppDeepLink }],
-                ],
-            },
+            reply_markup: { inline_keyboard: kb },
             disable_web_page_preview: true,
         });
 
