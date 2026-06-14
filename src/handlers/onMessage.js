@@ -189,12 +189,13 @@ async function onMessage(bot, msg) {
     if (text === "📦 Kirim (Taminot)")   return startPurchase(bot, chatId, userId);
 
     if (text === "📌 Qarzlar") {
-        const debts = await Debt.find({ isClosed: false }).sort({ createdAt: -1 }).limit(50);
+        const debts = await Debt.find({ isClosed: false }).sort({ createdAt: -1 }).limit(20).lean();
         if (!debts.length) return bot.sendMessage(chatId, "✅ Ochiq qarzlar yo'q.");
+        // ✅ Avval sarlavha, keyin parallel yuborish (N+1 o'rniga Promise.all)
         await bot.sendMessage(chatId, `📌 Ochiq qarzlar: ${debts.length} ta`);
-        for (const d of debts) {
-            await bot.sendMessage(chatId, formatDebtCard(d), { parse_mode: "HTML", ...debtPayButton(d._id) });
-        }
+        await Promise.all(
+            debts.map(d => bot.sendMessage(chatId, formatDebtCard(d), { parse_mode: "HTML", ...debtPayButton(d._id) }))
+        );
         return;
     }
     if (text === "📆 Oylik hisobot") {
@@ -271,12 +272,13 @@ async function onMessage(bot, msg) {
 
     // ── Foydalanuvchilar ro'yxati
     if (text === "📋 Foydalanuvchilar ro'yxati") {
-        const workers = await Worker.find().sort({ createdAt: -1 });
+        const workers = await Worker.find().sort({ createdAt: -1 }).lean();
         if (!workers.length) return bot.sendMessage(chatId, "Foydalanuvchilar topilmadi");
-        for (const w of workers) {
+        // ✅ Parallel yuborish — ketma-ket await o'rniga Promise.all
+        await Promise.all(workers.map(w => {
             const status     = w.isActive ? "🟢 Aktiv" : "🔴 Nofaol";
             const adminBadge = Number(w.tgId) === Number(ADMIN_TG_ID) ? " 👑" : "";
-            await bot.sendMessage(
+            return bot.sendMessage(
                 chatId,
                 `👤 <b>${escapeHtml(w.fullName || "Noma'lum")}</b>${adminBadge}\n` +
                 `🆔 <code>${w.tgId}</code>\n` +
@@ -292,7 +294,7 @@ async function onMessage(bot, msg) {
                     }
                 }
             );
-        }
+        }));
         return;
     }
 

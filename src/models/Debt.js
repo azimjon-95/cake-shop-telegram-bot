@@ -32,3 +32,5 @@ const DebtSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 module.exports = mongoose.model("Debt", DebtSchema);
+// ✅ isClosed + kind compound index — qarz so'rovlar uchun
+DebtSchema.index({ isClosed: 1, kind: 1 });

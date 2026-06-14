@@ -57,32 +57,25 @@ function webappRoutes({ botToken, customerBotToken, io }) {
             const { from, to } = getRangeFromQuery(req);
             const dateMatch = { createdAt: { $gte: from, $lte: to } };
 
-            const saleAgg = await Sale.aggregate([
-                { $match: dateMatch },
-                {
-                    $group: {
-                        _id: null,
-                        soldTotal: { $sum: "$total" },
-                        salePaid: { $sum: "$paidTotal" },
-                    },
-                },
+            // ✅ 5 ta so'rovni parallel yuboramiz — ketma-ket emas
+            const [saleAgg, expenseAgg, customerDebtAgg, supplierDebtAgg, balanceDoc] = await Promise.all([
+                Sale.aggregate([
+                    { $match: dateMatch },
+                    { $group: { _id: null, soldTotal: { $sum: "$total" }, salePaid: { $sum: "$paidTotal" } } },
+                ]),
+                Expense.aggregate([
+                    { $match: dateMatch },
+                    { $group: { _id: null, sum: { $sum: "$amount" } } },
+                ]),
+                Debt.aggregate([
+                    { $match: { isClosed: false, kind: "customer" } },
+                    { $group: { _id: null, sum: { $sum: "$remainingDebt" } } },
+                ]),
+                Supplier.aggregate([
+                    { $group: { _id: null, sum: { $sum: "$debt" } } },
+                ]),
+                Counter.findOne({ key: "balance" }).lean(),
             ]);
-
-            const expenseAgg = await Expense.aggregate([
-                { $match: dateMatch },
-                { $group: { _id: null, sum: { $sum: "$amount" } } },
-            ]);
-
-            const customerDebtAgg = await Debt.aggregate([
-                { $match: { isClosed: false, kind: "customer" } },
-                { $group: { _id: null, sum: { $sum: "$remainingDebt" } } },
-            ]);
-
-            const supplierDebtAgg = await Supplier.aggregate([
-                { $group: { _id: null, sum: { $sum: "$debt" } } },
-            ]);
-
-            const balanceDoc = await Counter.findOne({ key: "balance" }).lean();
 
             return res.json({
                 ok: true,

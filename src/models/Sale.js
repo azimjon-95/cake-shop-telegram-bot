@@ -23,7 +23,7 @@ const SaleSchema = new mongoose.Schema(
         total: { type: Number, required: true }, // qty*price yig‘indi
         paidTotal: { type: Number, required: true }, // real tushgan pul (qarz bo‘lsa kamroq)
         debtTotal: { type: Number, required: true }, // total - paidTotal
-        createdAt: { type: Date, default: Date.now }
+        createdAt: { type: Date, default: Date.now, index: true } // ✅ index
     },
     { versionKey: false }
 );

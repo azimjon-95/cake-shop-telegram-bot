@@ -20,4 +20,7 @@ const ExpenseSchema = new mongoose.Schema({
     description: { type: String, default: "" }
 }, { timestamps: true });
 
+// ✅ createdAt indeksi — dashboard aggregate va filter uchun
+ExpenseSchema.index({ createdAt: 1 });
+
 module.exports = mongoose.model("Expense", ExpenseSchema);

@@ -62,8 +62,21 @@ async function safe(name, fn) {
 
         const server = http.createServer(app);
 
+        // ✅ CORS faqat webapp URL dan — * xavfli
+        const allowedOrigins = [
+            WEBAPP_URL ? new URL(WEBAPP_URL).origin : null,
+            "http://localhost:3000",
+            "http://localhost:3001",
+        ].filter(Boolean);
+
         const io = new Server(server, {
-            cors: { origin: "*", methods: ["GET", "POST"] },
+            cors: {
+                origin: (origin, cb) => {
+                    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+                    cb(new Error("Socket CORS BLOCKED"));
+                },
+                methods: ["GET", "POST"]
+            },
         });
 
         global.io = io;

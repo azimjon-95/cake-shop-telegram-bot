@@ -86,7 +86,27 @@ async function buildDashboardData(fromISO, toISO) {
     };
 }
 
-function createDashboardRealtime({ io, intervalMs = 2500 }) {
+// ✅ Natijani 8 sekund cache qilamiz — MongoDB ga ortiqcha so'rov ketmaydi
+const _cache = new Map(); // key -> { data, ts }
+const CACHE_TTL = 8000;   // 8 sekund
+
+async function buildDashboardDataCached(fromISO, toISO) {
+    const cacheKey = fromISO + toISO;
+    const cached = _cache.get(cacheKey);
+    if (cached && (Date.now() - cached.ts) < CACHE_TTL) {
+        return cached.data;
+    }
+    const data = await buildDashboardData(fromISO, toISO);
+    _cache.set(cacheKey, { data, ts: Date.now() });
+    // 30 dan ortiq unique range bo'lsa eski cachelarni tozala
+    if (_cache.size > 30) {
+        const oldest = [..._cache.entries()].sort((a,b) => a[1].ts - b[1].ts)[0];
+        _cache.delete(oldest[0]);
+    }
+    return data;
+}
+
+function createDashboardRealtime({ io, intervalMs = 10000 }) {
     // room -> { timer, lastHash, lastPayload, subsCount }
     const rooms = new Map();
 
@@ -95,7 +115,7 @@ function createDashboardRealtime({ io, intervalMs = 2500 }) {
         if (!st) return;
 
         try {
-            const payload = await buildDashboardData(st.fromISO, st.toISO);
+            const payload = await buildDashboardDataCached(st.fromISO, st.toISO);
             const hash = JSON.stringify(payload); // kichik loyihalarda yetadi
 
             if (hash !== st.lastHash) {
@@ -160,7 +180,7 @@ function createDashboardRealtime({ io, intervalMs = 2500 }) {
 
                 // darhol initial yuboramiz
                 try {
-                    const payload = await buildDashboardData(fromISO, toISO);
+                    const payload = await buildDashboardDataCached(fromISO, toISO);
                     st.lastHash = JSON.stringify(payload);
                     st.lastPayload = payload;
                     socket.emit("dashboard:update", payload);
