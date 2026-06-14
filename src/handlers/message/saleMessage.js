@@ -8,6 +8,7 @@ const { createReceiptTokenIfNeeded } = require("../../services/receipt");
 const { formatMoney } = require("../../utils/money");
 const { normalizeSaleTextWithAI } = require("../../services/aiSale");
 const { isLikelySaleText, saleWarningText } = require("../../services/saleGuard");
+const { emitPrintSignal } = require("../../services/printSignal");
 
 async function processSaleInput(bot, msg, rawInputText, seller, opts = {}) {
     const chatId = msg.chat.id;
@@ -92,6 +93,9 @@ async function saveParsedSale(bot, chatId, parsed, seller) {
         (sale.debtTotal > 0 ? `\nQarz: <b>${formatMoney(sale.debtTotal)}</b> so'm` : ""),
         { parse_mode: "HTML", ...mergedKbd }
     );
+
+    // ✅ PWA ga avtomatik print signal
+    emitPrintSignal({ sale, receiptToken });
 
     await sendToGroup(bot, notify);
 
