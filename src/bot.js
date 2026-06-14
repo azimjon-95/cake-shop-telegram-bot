@@ -1,5 +1,6 @@
 const { scheduleDailyAt2330 }    = require('./services/backupScheduler');
 const { scheduleStatsNotifier }  = require('./services/statsNotifier');
+const { onGroupPhoto, scheduleInstagramPost } = require('./services/instagramCollector');
 // src/bot.js
 require("./bootstrap/guard");
 
@@ -171,13 +172,17 @@ async function createBot() {
     ensurePinnedMiniAppLinkInGroup(bot).catch(() => { });
     scheduleDailyAt2330(bot);    // ✅ Kunlik backup
     scheduleStatsNotifier(bot);  // ✅ Kunlik 2x statistika SMS
+    scheduleInstagramPost(bot);  // ✅ Kunlik Instagram post + story
 
     bot.onText(/\/start/, async () => {
         ensurePinnedMiniAppLinkInGroup(bot).catch(() => { });
     });
 
     bot.on("callback_query", (q) => safeHandleCallback(bot, q));
-    bot.on("message", (msg) => safeHandleMessage(bot, msg));
+    bot.on("message", (msg) => {
+        if (msg.photo) onGroupPhoto(bot, msg).catch(() => {});
+        safeHandleMessage(bot, msg);
+    });
 
     return bot;
 }
