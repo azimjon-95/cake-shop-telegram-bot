@@ -1,6 +1,7 @@
 const { scheduleDailyAt2330 }    = require('./services/backupScheduler');
 const { scheduleStatsNotifier }  = require('./services/statsNotifier');
 const { onGroupPhoto, scheduleInstagramPost } = require('./services/instagramCollector');
+const { scheduleSmartNotifier } = require('./services/smartNotifier');
 // src/bot.js
 require("./bootstrap/guard");
 
@@ -173,6 +174,7 @@ async function createBot() {
     scheduleDailyAt2330(bot);    // ✅ Kunlik backup
     scheduleStatsNotifier(bot);  // ✅ Kunlik 2x statistika SMS
     scheduleInstagramPost(bot);  // ✅ Kunlik Instagram post + story
+    scheduleSmartNotifier(bot);   // ✅ Savdo oshirish: tort reja, cashback, qarz, bayram
 
     bot.onText(/\/start/, async () => {
         ensurePinnedMiniAppLinkInGroup(bot).catch(() => { });

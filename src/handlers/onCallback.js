@@ -17,7 +17,7 @@ const { getUserName, escapeHtml, payAmountKeyboard } = require("../logic/ui");
 const { startDeleteFlow } = require("../logic/deleteFlow");
 
 const { onExpenseCallback } = require("./expenseFlow");
-const { redis: authRedis } = require("../services/auth");
+// redis: ../services/auth dan allaqachon import qilingan (yuqorida)
 const { isAdmin, handleBalanceQuickCallback } = require("../logic/balanceEditFlow");
 const { onPurchaseCallback } = require("./purchaseFlow");
 
@@ -419,7 +419,7 @@ async function onCallback(bot, q) {
 
         // ✅ Balans tahrirlash bekor qilish
         if (data === "bal_edit_cancel") {
-            await authRedis.del(`bal_edit:${userId}`);
+            await redis.del(`bal_edit:${userId}`);
             await safeAnswer(bot, q, "Bekor qilindi");
             try {
                 await bot.editMessageText("❌ Balans tahrirlash bekor qilindi.", {
