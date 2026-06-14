@@ -77,7 +77,7 @@ async function saveParsedSale(bot, chatId, parsed, seller) {
     let webappUrl = null;
     if (receiptToken?.token && process.env.WEBAPP_URL) {
         const baseUrl = String(process.env.WEBAPP_URL).replace(/\/+$/, "");
-        webappUrl = `${baseUrl}/receipt?token=${receiptToken.token}`;
+        webappUrl = `${baseUrl}/receipt?token=${receiptToken.token}&auto=1`;
     }
 
     const delKbd = deleteSaleKeyboard(sale._id);
