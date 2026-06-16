@@ -117,14 +117,14 @@ async function ensurePinnedMiniAppLinkInGroup(bot) {
             "📊 <b>TOTLI — Boshqaruv markazi</b>\n\n" +
             "👇 Kerakli tugmani bosing:";
 
-        const kb = [[{ text: "📊 Dashboard (Mini App)", url: miniAppDeepLink }]];
+        const newKb = [[{ text: "📊 Dashboard (Mini App)", url: miniAppDeepLink }]];
         if (printUrl) {
-            kb.push([{ text: "🖨 Print Station — Chek chiqarish", web_app: { url: printUrl } }]);
+            newKb.push([{ text: "🖨 Print Station — Chek chiqarish", web_app: { url: printUrl } }]);
         }
 
         const sent = await bot.sendMessage(groupId, text, {
             parse_mode: "HTML",
-            reply_markup: { inline_keyboard: kb },
+            reply_markup: { inline_keyboard: newKb },
             disable_web_page_preview: true,
         });
 
