@@ -16,13 +16,14 @@ const { sendBackupToTelegram } = require("../services/backup");
 const { handleSharedContact, handleForwardedUser, handleTgIdWorkerAdd } = require("../logic/addWorkerFlow");
 const { startCashbackFlow, handleCashbackMessage } = require("../logic/cashbackFlow");
 const { handleExpenseReportMenu } = require("./message/expenseReportRouter");
-const { closeCashAndMakeReport } = require("../services/closeCash");
+const { closeCashAndMakeReport, sendCloseReportToGroup, buildCloseReportText } = require("../services/closeCash");
 const { sendToGroup }  = require("../services/notify");
 const { closeNotifyText, debtPayNotifyText } = require("../utils/report");
 const { payDebt }      = require("../services/debtPay");
 const { formatMoney }  = require("../utils/money");
 const { helpText }     = require("../utils/helpText");
 const { handleDeleteMessage } = require("../logic/deleteFlow");
+const { ensurePinnedMiniAppLinkInGroup } = require("../services/pinMessage");
 const { getUserName, formatDebtCard, debtPayButton, escapeHtml } = require("../logic/ui");
 const { startExpense, onExpenseMessage }   = require("./expenseFlow");
 const { startPurchase, onPurchaseMessage } = require("./purchaseFlow");
@@ -202,12 +203,153 @@ async function onMessage(bot, msg) {
         const year = dayjs().year();
         return bot.sendMessage(chatId, `📆 Oy tanlang (${year}):`, { reply_markup: monthKeyboard(year) });
     }
+    // ══════════════════════════════════════════════════════
+    // 🔒 KASSA YOPISH — ko'p qadamli flow
+    // Qadam 1: Nechta tort qoldi?
+    // Qadam 2: Vitrina rasmini oling (1-rasm)
+    // Qadam 3: Vitrina rasmini oling (2-rasm) | O'tkazib yuborish
+    // Qadam 4: Hisobot yuboriladi
+    // ══════════════════════════════════════════════════════
     if (text === "🔒 Kasani yopish") {
+        await setMode(userId, "close_cash_tort");
+        await redis.del(`close_cash:${userId}`);
+        return bot.sendMessage(chatId,
+            "🔒 <b>Kassa yopish boshlandi</b>\n\n" +
+            "🎂 <b>Bugun nechta tort qoldi?</b>\n" +
+            "<i>Raqam yozing (masalan: 3, 6, 9...)</i>",
+            {
+                parse_mode: "HTML",
+                reply_markup: {
+                    keyboard: [
+                        [{ text: "0" }, { text: "1" }, { text: "2" }, { text: "3" }],
+                        [{ text: "4" }, { text: "5" }, { text: "6" }, { text: "7" }],
+                        [{ text: "8" }, { text: "9" }, { text: "10" }, { text: "12" }],
+                        [{ text: "❌ Bekor qilish" }],
+                    ],
+                    resize_keyboard: true,
+                    one_time_keyboard: true,
+                }
+            }
+        );
+    }
+
+    // Qadam 2: Tort soni kiritildi
+    if (await getMode(userId) === "close_cash_tort") {
+        if (text === "❌ Bekor qilish") {
+            await setMode(userId, "sale");
+            await redis.del(`close_cash:${userId}`);
+            return bot.sendMessage(chatId, "❌ Kassa yopish bekor qilindi.", {
+                reply_markup: mainMenuKeyboard(),
+            });
+        }
+        const tortCount = parseInt(text);
+        if (isNaN(tortCount) || tortCount < 0) {
+            return bot.sendMessage(chatId, "⚠️ Raqam kiriting (masalan: 0, 3, 6...)");
+        }
+        await redis.set(`close_cash:${userId}`, JSON.stringify({ tortCount }), "EX", 600);
+        await setMode(userId, "close_cash_photo1");
+        return bot.sendMessage(chatId,
+            `✅ <b>${tortCount} ta tort</b> qoldi.\n\n` +
+            "📸 <b>1-vitrina (muzlatgich) rasmini oling</b>\n" +
+            "<i>Tortlar aniq ko'rinishi shart!</i>",
+            {
+                parse_mode: "HTML",
+                reply_markup: {
+                    keyboard: [[{ text: "⏭ O'tkazib yuborish" }], [{ text: "❌ Bekor qilish" }]],
+                    resize_keyboard: true,
+                }
+            }
+        );
+    }
+
+    // Qadam 3: 1-rasm yoki o'tkazib yuborish
+    if (await getMode(userId) === "close_cash_photo1") {
+        if (text === "❌ Bekor qilish") {
+            await setMode(userId, "sale");
+            await redis.del(`close_cash:${userId}`);
+            return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenuKeyboard() });
+        }
+
+        const stateRaw  = await redis.get(`close_cash:${userId}`);
+        const state     = stateRaw ? JSON.parse(stateRaw) : {};
+
+        if (msg.photo) {
+            const fileId = msg.photo[msg.photo.length - 1].file_id;
+            state.photo1 = fileId;
+            await redis.set(`close_cash:${userId}`, JSON.stringify(state), "EX", 600);
+            await setMode(userId, "close_cash_photo2");
+            return bot.sendMessage(chatId,
+                "✅ 1-rasm qabul qilindi.\n\n" +
+                "📸 <b>2-vitrina rasmini oling</b>\n" +
+                "<i>Yoki o'tkazib yuboring</i>",
+                {
+                    parse_mode: "HTML",
+                    reply_markup: {
+                        keyboard: [[{ text: "⏭ O'tkazib yuborish" }], [{ text: "❌ Bekor qilish" }]],
+                        resize_keyboard: true,
+                    }
+                }
+            );
+        }
+        if (text === "⏭ O'tkazib yuborish") {
+            await setMode(userId, "close_cash_photo2");
+            return bot.sendMessage(chatId,
+                "📸 <b>2-vitrina rasmini oling</b>\n<i>Yoki o'tkazib yuboring</i>",
+                {
+                    parse_mode: "HTML",
+                    reply_markup: {
+                        keyboard: [[{ text: "⏭ O'tkazib yuborish" }], [{ text: "❌ Bekor qilish" }]],
+                        resize_keyboard: true,
+                    }
+                }
+            );
+        }
+        return bot.sendMessage(chatId, "📸 Iltimos, rasm yuboring yoki o'tkazib yuboring.");
+    }
+
+    // Qadam 4: 2-rasm yoki o'tkazib yuborish → Hisobot yuborish
+    if (await getMode(userId) === "close_cash_photo2") {
+        if (text === "❌ Bekor qilish") {
+            await setMode(userId, "sale");
+            await redis.del(`close_cash:${userId}`);
+            return bot.sendMessage(chatId, "❌ Bekor qilindi.", { reply_markup: mainMenuKeyboard() });
+        }
+
+        const stateRaw = await redis.get(`close_cash:${userId}`);
+        const state    = stateRaw ? JSON.parse(stateRaw) : {};
+
+        if (msg.photo) {
+            state.photo2 = msg.photo[msg.photo.length - 1].file_id;
+        }
+
+        // Rasmlar yig'ish
+        const photos = [state.photo1, state.photo2].filter(Boolean);
+
+        // ⏳ Yuklanmoqda xabari
+        const waitMsg = await bot.sendMessage(chatId,
+            "⏳ Hisobot tayyorlanmoqda...",
+            { reply_markup: { remove_keyboard: true } }
+        ).catch(() => null);
+
+        // Hisobotni DB dan olamiz
         const summary = await closeCashAndMakeReport();
-        const msgText = closeNotifyText(summary);
-        await bot.sendMessage(chatId, msgText, { parse_mode: "HTML" });
-        await sendToGroup(bot, msgText);
-        await bot.sendDocument(chatId, summary.filePath, {}, { filename: summary.fileName });
+
+        // Guruhga yuborish (rasmlar + hisobot)
+        await sendCloseReportToGroup(bot, { summary, tortCount: state.tortCount, photos });
+
+        // Xodimga hisobot fayli yuborish
+        const reportText = buildCloseReportText({ ...summary, tortCount: state.tortCount });
+        await bot.sendMessage(chatId, reportText, { parse_mode: "HTML" }).catch(() => {});
+        await bot.sendDocument(chatId, summary.filePath, {}, { filename: summary.fileName }).catch(() => {});
+
+        // State tozalash
+        await redis.del(`close_cash:${userId}`);
+        await setMode(userId, "sale");
+
+        // Asosiy menyu
+        await bot.sendMessage(chatId, "✅ Kassa yopildi! Yaxshi dam oling 🌙", {
+            reply_markup: mainMenuKeyboard(),
+        });
         return;
     }
     if (text === "ℹ️ Yordam") {
@@ -231,6 +373,18 @@ async function onMessage(bot, msg) {
 
     // ── ADMIN ONLY: Balans tahrirlash
     // ── ADMIN: Qo'lda backup
+    // ── ADMIN: Pin xabar qo'lda yuborish
+    if (text === "📌 Pin xabar yuborish") {
+        if (!admin) return bot.sendMessage(chatId, "⛔ Ruxsat yo'q.");
+        await bot.sendMessage(chatId, "⏳ Pin xabar yangilanmoqda...");
+        try {
+            await ensurePinnedMiniAppLinkInGroup(bot);
+            return bot.sendMessage(chatId, "✅ Pin xabar guruhga yuborildi va pin qilindi!");
+        } catch (e) {
+            return bot.sendMessage(chatId, "❌ Xatolik: " + (e?.message || e));
+        }
+    }
+
     if (text === "📤 Backup yuborish") {
         if (!admin) return bot.sendMessage(chatId, "⛔ Ruxsat yo'q.");
         await bot.sendMessage(chatId, "⏳ Backup tayyorlanmoqda...");

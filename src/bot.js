@@ -2,6 +2,7 @@ const { scheduleDailyAt2330 }    = require('./services/backupScheduler');
 const { scheduleStatsNotifier }  = require('./services/statsNotifier');
 const { onGroupPhoto, scheduleInstagramPost } = require('./services/instagramCollector');
 const { scheduleSmartNotifier } = require('./services/smartNotifier');
+const { ensurePinnedMiniAppLinkInGroup } = require('./services/pinMessage');
 // src/bot.js
 require("./bootstrap/guard");
 
@@ -87,56 +88,7 @@ process.on("unhandledRejection", (reason) => {
     console.error("[unhandledRejection]", reason?.message || reason);
 });
 
-async function ensurePinnedMiniAppLinkInGroup(bot) {
-    const groupId = GROUP_CHAT_ID;
-    const miniAppDeepLink = `https://t.me/${BOT_USERNAME}?startapp=${encodeURIComponent(STARTAPP_PAYLOAD)}`;
-
-    if (!groupId) return;
-
-    try {
-        const chat = await bot.getChat(groupId);
-        const pinned = chat?.pinned_message;
-        const kb = pinned?.reply_markup?.inline_keyboard || [];
-        const flat = kb.flat();
-        const hasSameLink = flat.some((b) => b?.url === miniAppDeepLink);
-
-        if (pinned && hasSameLink) {
-            console.log("✅ Group pinned Mini App link already exists");
-            return;
-        }
-
-        if (pinned?.message_id) {
-            await bot.unpinChatMessage(groupId, { message_id: pinned.message_id }).catch(() => { });
-        }
-
-        const printUrl = WEBAPP_URL
-            ? String(WEBAPP_URL).replace(/\/+$/, "") + "/print"
-            : null;
-
-        const text =
-            "📊 <b>TOTLI — Boshqaruv markazi</b>\n\n" +
-            "👇 Kerakli tugmani bosing:";
-
-        const newKb = [[{ text: "📊 Dashboard (Mini App)", url: miniAppDeepLink }]];
-        if (printUrl) {
-            newKb.push([{ text: "🖨 Print Station — Chek chiqarish", web_app: { url: printUrl } }]);
-        }
-
-        const sent = await bot.sendMessage(groupId, text, {
-            parse_mode: "HTML",
-            reply_markup: { inline_keyboard: newKb },
-            disable_web_page_preview: true,
-        });
-
-        await bot.pinChatMessage(groupId, sent.message_id, {
-            disable_notification: true,
-        }).catch(() => { });
-
-        console.log("📌 Group pinned message created/updated");
-    } catch (e) {
-        console.error("❌ ensurePinnedMiniAppLinkInGroup error:", e?.message || e);
-    }
-}
+// ensurePinnedMiniAppLinkInGroup — pinMessage.js ga kochgan
 
 async function safeHandleMessage(bot, msg) {
     try {

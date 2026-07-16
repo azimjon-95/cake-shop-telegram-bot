@@ -70,6 +70,7 @@ function menuKeyboard(isAdmin = false) {
     ];
     if (isAdmin) {
         rows.push([{ text: "💰 Balansni tahrirlash" }, { text: "📤 Backup yuborish" }]);
+        rows.push([{ text: "📌 Pin xabar yuborish" }]);
     }
     rows.push([{ text: "⬅️ Orqaga" }]);
     return { keyboard: rows, resize_keyboard: true };
