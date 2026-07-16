@@ -76,7 +76,24 @@ async function onMessage(bot, msg) {
         }
     }
 
-    if (!text && !hasVoice) return;
+    const hasPhoto     = !!msg.photo;
+    const hasVideoNote = !!msg.video_note;
+
+    // Rasm yoki video note — faqat kassa yopish rejimida qabul qilinadi
+    if (!text && !hasVoice) {
+        if (hasPhoto || hasVideoNote) {
+            // Kassa yopish flow uchun o'tkazib yuboramiz
+            if (!(await isAuthed(userId))) return;
+            const curMode = await getMode(userId);
+            if (curMode === "close_cash_photo1" || curMode === "close_cash_photo2") {
+                // pastda ushlanadi — davom etadi
+            } else {
+                return; // boshqa rejimda rasm/video kerak emas
+            }
+        } else {
+            return;
+        }
+    }
 
     // ── Top commands (/start, /tozalash)
     if (await handleTopCommands(bot, msg)) return;

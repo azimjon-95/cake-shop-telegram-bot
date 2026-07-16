@@ -24,7 +24,6 @@ function mainMenuKeyboard(waUrl) {
         [{ text: "📌 Qarzlar" }, { text: "🔒 Kasani yopish" }],
         [{ text: "📦 Kirim (Taminot)" }, { text: "📆 Oylik hisobot" }],
         [{ text: "🎁 Kashback orqali xarid" }, { text: "📋 Menyu" }],
-        [{ text: "💼 Dukon Foidasidan" }],
     ];
     return { keyboard, resize_keyboard: true };
 }
