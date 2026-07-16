@@ -10,7 +10,8 @@ const EXPENSE_CATEGORIES = [
     { key: "lunch",     text: "🍽 Abetga" },
     { key: "taxi",      text: "🚕 Taksiga" },
     { key: "master",    text: "🛠 Ustaga" },
-    { key: "bank_tax",  text: "🏦 Bank / Soliq to'lovlari" },
+    { key: "bank_tax",      text: "🏦 Bank / Soliq to'lovlari" },
+    { key: "owner_withdraw", text: "💼 Dukon Foidasidan" },
 ];
 
 // Tez qidirish uchun map

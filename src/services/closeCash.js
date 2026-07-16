@@ -111,34 +111,45 @@ async function closeCashAndMakeReport() {
     return { saleSum, expenseSum, debtSum, balance: bal, from, to, filePath, fileName };
 }
 
-// ── Guruhga kassa yopildi + tort qoldiq + rasmlar ──────
+// ── Guruhga kassa yopildi + tort qoldiq + rasm/video ───
+// media: [ { type: "photo"|"video_note", fileId } ]
 async function sendCloseReportToGroup(bot, {
-    summary,       // closeCashAndMakeReport() natijasi
-    tortCount,     // nechta tort qoldi (raqam)
-    photos = [],   // [ fileId, fileId ] — vitrina rasmlari (max 2)
+    summary,
+    tortCount,
+    media = [],   // [ { type: "photo"|"video_note", fileId } ] max 2
 }) {
     if (!GROUP_CHAT_ID) return;
 
     const msgText = buildCloseReportText({ ...summary, tortCount });
 
-    // 1. Agar rasmlar bo'lsa — media group sifatida yuborish
+    // Video note va photo larni ajratamiz
+    const photos     = media.filter(m => m.type === "photo");
+    const videoNotes = media.filter(m => m.type === "video_note");
+
+    // 1. Rasmlar bo'lsa — media group (caption birinchisida)
     if (photos.length > 0) {
         try {
-            const media = photos.slice(0, 2).map((fileId, i) => ({
-                type:    "photo",
-                media:   fileId,
-                caption: i === 0 ? msgText : undefined,
-                parse_mode: i === 0 ? "HTML" : undefined,
+            const mediaGroup = photos.slice(0, 2).map((m, i) => ({
+                type:       "photo",
+                media:      m.fileId,
+                caption:    i === 0 ? msgText : undefined,
+                parse_mode: i === 0 ? "HTML"  : undefined,
             }));
-            await bot.sendMediaGroup(GROUP_CHAT_ID, media);
+            await bot.sendMediaGroup(GROUP_CHAT_ID, mediaGroup);
         } catch (e) {
-            // Fallback: rasimsiz matn
-            console.error("[closeCash] sendMediaGroup error:", e?.message);
+            console.error("[closeCash] sendMediaGroup:", e?.message);
             await bot.sendMessage(GROUP_CHAT_ID, msgText, { parse_mode: "HTML" }).catch(() => {});
         }
     } else {
         // Rasim yo'q — faqat matn
         await bot.sendMessage(GROUP_CHAT_ID, msgText, { parse_mode: "HTML" }).catch(() => {});
+    }
+
+    // 2. Video note lar alohida yuboriladi (caption qo'yib bo'lmaydi)
+    for (const v of videoNotes.slice(0, 2)) {
+        await bot.sendVideoNote(GROUP_CHAT_ID, v.fileId).catch(e => {
+            console.error("[closeCash] sendVideoNote:", e?.message);
+        });
     }
 }
 
