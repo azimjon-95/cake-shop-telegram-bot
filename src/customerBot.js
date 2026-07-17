@@ -23,22 +23,56 @@ function createSafePollingBot(token, name) {
     // ✅ webhook conflict bo‘lmasin
     bot.deleteWebHook({ drop_pending_updates: true }).catch(() => { });
 
-    bot.on("polling_error", async (err) => {
-        const msg = err?.message || String(err);
-        console.error("CUSTOMER_POLLING_ERROR:", msg);
+    // Spam oldini olish — bir xil xato 30s da bir marta loglanadi
+    const _errCount = {};
+    const _errLast  = {};
+    const LOG_IV    = 30_000;
 
-        const isNet =
-            msg.includes("ETIMEDOUT") ||
-            msg.includes("EAI_AGAIN") ||
-            msg.includes("ECONNRESET") ||
-            msg.includes("socket hang up") ||
-            msg.includes("ENOTFOUND");
+    bot.on("polling_error", async (err) => {
+        const raw = err?.message || String(err);
+
+        // 409 — serverda bot hali ishlayapti (lokal dev paytida normal)
+        if (raw.includes("409 Conflict")) {
+            const now = Date.now();
+            _errCount["409"] = (_errCount["409"] || 0) + 1;
+            if (!_errLast["409"] || now - _errLast["409"] > LOG_IV) {
+                _errLast["409"] = now;
+                console.warn(
+                     +
+                    "Serverda bot ishlayapti — lokal test uchun: pm2 stop cake"
+                );
+            }
+            return;
+        }
+
+        const isNet = raw.includes("ETIMEDOUT") || raw.includes("ESOCKETTIMEDOUT") ||
+                      raw.includes("ECONNRESET") || raw.includes("EAI_AGAIN") ||
+                      raw.includes("ENOTFOUND")  || raw.includes("socket hang up");
 
         if (isNet) {
-            try { await bot.stopPolling(); } catch { }
+            const now = Date.now();
+            _errCount["NET"] = (_errCount["NET"] || 0) + 1;
+            if (!_errLast["NET"] || now - _errLast["NET"] > LOG_IV) {
+                _errLast["NET"] = now;
+                console.warn();
+            }
+            const delay = Math.min(60_000, 3000 * Math.pow(2, (_errCount["NET"] || 1) - 1));
+            try { await bot.stopPolling(); } catch {}
             setTimeout(() => {
-                bot.startPolling().catch(() => { });
-            }, 3000);
+                bot.startPolling().then(() => {
+                    _errCount["NET"] = 0;
+                    delete _errLast["NET"];
+                }).catch(() => {});
+            }, delay);
+            return;
+        }
+
+        // Boshqa xatolar — bir marta
+        const key = "OTHER_" + raw.slice(0, 20);
+        const now = Date.now();
+        if (!_errLast[key] || now - _errLast[key] > LOG_IV) {
+            _errLast[key] = now;
+            console.error("[CUSTOMER_BOT] ❌", raw);
         }
     });
 

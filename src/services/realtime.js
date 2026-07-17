@@ -17,12 +17,11 @@ function createRealtime({ redisUrl, io }) {
         commandTimeout:       3000,
         enableReadyCheck:     true,
         retryStrategy(times) {
-            // Birinchi urinishda ogohlantirish — keyin jim
             if (times === 1 && !warned) {
                 warned = true;
                 console.log("[realtime] Redis yo'q — Pub/Sub o'chirilgan, Socket.IO to'g'ridan ishlaydi");
             }
-            return Math.min(times * 5000, 60_000); // 5s..60s — sekin qayta urinish
+            return Math.min(times * 10_000, 60_000); // 10s..60s — sekin, spam yo'q
         },
     };
 
