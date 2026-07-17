@@ -1,47 +1,56 @@
 // src/services/pinMessage.js
-// Guruhga pin xabar yuborish
+// Guruhga PIN xabar — har kuni bir marta tekshiriladi
+// Bot admin bo'lishi va "Pin messages" ruxsati bo'lishi shart
 
-const { GROUP_CHAT_ID, WEBAPP_URL, CUSTOMER_BOT_USERNAME } = require("../config");
+const { WEBAPP_URL } = require("../config");
 
-async function ensurePinnedMiniAppLinkInGroup(bot) {
-    const groupId = GROUP_CHAT_ID;
+// ── Ichki holat — kun davomida bir marta yuborilsin ──────
+let _lastPinCheck  = 0;        // ms
+let _pinCheckGap   = 60 * 60 * 1000; // 1 soat — qayta tekshirish oralig'i
 
-    // GROUP_CHAT_ID bo'sh bo'lsa — ogohlantirish va chiqish
-    if (!groupId) {
-        console.warn("⚠️ [pinMessage] GROUP_CHAT_ID .env da yo'q — pin qilinmadi");
-        return { ok: false, error: "GROUP_CHAT_ID empty" };
+// ── Asosiy funksiya ──────────────────────────────────────
+async function ensurePinnedMiniAppLinkInGroup(bot, forceSend = false) {
+    // GROUP_CHAT_ID — .env dan olamiz (har safar yangi qiymat bo'lishi uchun)
+    const rawId = process.env.GROUP_CHAT_ID || "";
+    if (!rawId) {
+        console.warn("⚠️ [pin] GROUP_CHAT_ID .env da yo'q");
+        return { ok: false };
     }
 
-    // Admin bot username ni botdan olamiz — env dan emas
-    let adminBotUsername = "";
+    // Manfiy raqam bo'lishi shart (-100...)
+    const groupId = rawId.startsWith("-") ? rawId : `-${rawId}`;
+
+    // Vaqt filtri — tez-tez chaqirilsa ham bir soatda bir marta ishlaydi
+    const now = Date.now();
+    if (!forceSend && now - _lastPinCheck < _pinCheckGap) {
+        return { ok: true, skipped: true };
+    }
+    _lastPinCheck = now;
+
+    // WebApp URL
+    const base       = WEBAPP_URL ? String(WEBAPP_URL).replace(/\/+$/, "") : "";
+    const dashUrl    = base || "https://totli-inky.vercel.app";
+    const printUrl   = base ? base + "/print" : null;
+
     try {
+        // ── Bot o'zi haqida ma'lumot ──────────────────────
         const me = await bot.getMe();
-        adminBotUsername = me.username || "";
-    } catch (e) {
-        console.error("❌ [pinMessage] bot.getMe() xato:", e?.message);
-        return { ok: false, error: e?.message };
-    }
 
-    const webappBase   = WEBAPP_URL ? String(WEBAPP_URL).replace(/\/+$/, "") : "";
-    const dashboardUrl = webappBase || `https://t.me/${adminBotUsername}?startapp=dashboard`;
-    const printUrl     = webappBase ? webappBase + "/print" : null;
-
-    try {
+        // ── Guruh pinini tekshirish ───────────────────────
         const chat   = await bot.getChat(groupId);
         const pinned = chat?.pinned_message;
 
-        // Tugmalarni tekshirish — allaqachon to'g'ri pin bormi?
-        const kb   = pinned?.reply_markup?.inline_keyboard || [];
-        const flat = kb.flat();
-        const hasOurLink = flat.some(b =>
-            b?.url === dashboardUrl ||
-            b?.web_app?.url === printUrl ||
-            (b?.url && b.url.includes("startapp=dashboard"))
-        );
-
-        if (pinned && hasOurLink) {
-            console.log("✅ [pinMessage] Pin allaqachon mavjud — tegmadik");
-            return { ok: true, updated: false };
+        // Pin bor va bizniki — tegmaymiz
+        if (!forceSend && pinned) {
+            const kb   = (pinned.reply_markup?.inline_keyboard || []).flat();
+            const ours = kb.some(b =>
+                (b?.web_app?.url && b.web_app.url.startsWith(base || "https://totli")) ||
+                (b?.url          && b.url.startsWith(base || "https://totli"))
+            );
+            if (ours) {
+                console.log("✅ [pin] Pin allaqachon to'g'ri — tegmadik");
+                return { ok: true, updated: false };
+            }
         }
 
         // Eski pinni yechamiz
@@ -49,32 +58,68 @@ async function ensurePinnedMiniAppLinkInGroup(bot) {
             await bot.unpinChatMessage(groupId, { message_id: pinned.message_id }).catch(() => {});
         }
 
-        // Yangi pin xabar
-        const text  = "📊 <b>TOTLI — Boshqaruv markazi</b>\n\n👇 Kerakli tugmani bosing:";
-        const newKb = [[{ text: "📊 Dashboard", web_app: { url: dashboardUrl } }]];
+        // ── Hisobot xabari matni ──────────────────────────
+        const d    = new Date(new Date().toLocaleString("en", { timeZone: "Asia/Tashkent" }));
+        const date = `${d.getDate()}-${d.toLocaleString("uz", { month: "short" })}`;
+
+        const text =
+            `📊 <b>TOTLI — Kunlik boshqaruv</b>\n` +
+            `📅 ${date} | 🍰 Totli tortlar\n\n` +
+            `👇 Dashboard ni oching yoki chek stansiyasini ishga tushiring:`;
+
+        // ── Inline tugmalar ──────────────────────────────
+        const kb = [[{ text: "📊 Dashboard", web_app: { url: dashUrl } }]];
         if (printUrl) {
-            newKb.push([{ text: "🖨 Print Station — Chek chiqarish", web_app: { url: printUrl } }]);
+            kb.push([{ text: "🖨 Print Station", web_app: { url: printUrl } }]);
         }
 
+        // ── Xabar yuborish ───────────────────────────────
         const sent = await bot.sendMessage(groupId, text, {
             parse_mode: "HTML",
-            reply_markup: { inline_keyboard: newKb },
+            reply_markup: { inline_keyboard: kb },
             disable_web_page_preview: true,
         });
 
+        // ── Pin qilish ───────────────────────────────────
         await bot.pinChatMessage(groupId, sent.message_id, {
             disable_notification: true,
+        }).then(() => {
+            console.log(`📌 [pin] Guruhga pin xabar yuborildi va pin qilindi`);
         }).catch((e) => {
-            console.warn("⚠️ [pinMessage] pinChatMessage xato (bot admin emasmi?):", e?.message);
+            console.warn(`⚠️ [pin] Pin qilishda xato: ${e?.message}`);
+            console.warn("⚠️ [pin] Bot guruhda admin bo'lishi va 'Pin messages' ruxsati bo'lishi kerak");
         });
 
-        console.log("📌 [pinMessage] Pin xabar yuborildi va pin qilindi");
-        return { ok: true, updated: true };
+        return { ok: true, updated: true, messageId: sent.message_id };
 
     } catch (e) {
-        console.error("❌ [pinMessage] Xato:", e?.message || e);
-        return { ok: false, error: e?.message };
+        const msg = e?.message || String(e);
+
+        if (msg.includes("chat not found") || msg.includes("400")) {
+            console.error(`❌ [pin] Guruh topilmadi: ${groupId}`);
+            console.error("❌ [pin] Tekshiring: 1) GROUP_CHAT_ID to'g'rimi? 2) Bot guruhda a'zomi?");
+        } else if (msg.includes("403") || msg.includes("Forbidden")) {
+            console.error(`❌ [pin] Bot guruhga xabar yubora olmaydi — admin qiling`);
+        } else {
+            console.error(`❌ [pin] Xato: ${msg}`);
+        }
+
+        return { ok: false, error: msg };
     }
 }
 
-module.exports = { ensurePinnedMiniAppLinkInGroup };
+// ── Kunlik scheduler — har 2 soatda pin tekshirish ───────
+function schedulePinChecker(bot) {
+    // Dastlabki tekshirish — 10 soniyadan keyin
+    setTimeout(() => ensurePinnedMiniAppLinkInGroup(bot).catch(() => {}), 10_000);
+
+    // Har 2 soatda tekshiradi
+    setInterval(() => {
+        _lastPinCheck = 0; // reset — tekshirishga majburlaydi
+        ensurePinnedMiniAppLinkInGroup(bot).catch(() => {});
+    }, 2 * 60 * 60 * 1000);
+
+    console.log("📌 [pin] Scheduler: ishga tushdi (har 2 soatda tekshiradi)");
+}
+
+module.exports = { ensurePinnedMiniAppLinkInGroup, schedulePinChecker };

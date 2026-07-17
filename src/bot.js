@@ -15,7 +15,7 @@ const { scheduleDailyAt2330 }    = require("./services/backupScheduler");
 const { scheduleStatsNotifier }  = require("./services/statsNotifier");
 const { onGroupPhoto, scheduleInstagramPost } = require("./services/instagramCollector");
 const { scheduleSmartNotifier }  = require("./services/smartNotifier");
-const { ensurePinnedMiniAppLinkInGroup } = require("./services/pinMessage");
+const { ensurePinnedMiniAppLinkInGroup, schedulePinChecker } = require("./services/pinMessage");
 
 // ── Global uncaught — bot o'lmasin ──────────────────────
 process.on("uncaughtException",  (err) => console.error("[uncaughtException]",  err?.message || err));
@@ -164,7 +164,7 @@ async function createBot() {
 
     const bot = createSafePollingBot(BOT_TOKEN, "TOTLI_BOT");
 
-    ensurePinnedMiniAppLinkInGroup(bot).catch(() => {});
+    schedulePinChecker(bot); // ✅ Har 2 soatda pin tekshiradi
     scheduleDailyAt2330(bot);
     scheduleStatsNotifier(bot);
     scheduleInstagramPost(bot);

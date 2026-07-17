@@ -523,7 +523,7 @@ async function onMessage(bot, msg) {
         if (!admin) return bot.sendMessage(chatId, "⛔ Ruxsat yo'q.");
         await bot.sendMessage(chatId, "⏳ Pin xabar yangilanmoqda...");
         try {
-            await ensurePinnedMiniAppLinkInGroup(bot);
+            await ensurePinnedMiniAppLinkInGroup(bot, true); // forceSend = true
             return bot.sendMessage(chatId, "✅ Pin xabar guruhga yuborildi va pin qilindi!");
         } catch (e) {
             return bot.sendMessage(chatId, "❌ Xatolik: " + (e?.message || e));
