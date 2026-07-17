@@ -1,31 +1,46 @@
 // src/services/pinMessage.js
-// Guruhga pin xabar yuborish — admin qo'lda ham, bot restart da ham chaqiradi
+// Guruhga pin xabar yuborish
 
-const { GROUP_CHAT_ID, WEBAPP_URL } = require("../config");
-
-// BOT_USERNAME va STARTAPP_PAYLOAD ni bot.js dan olamiz (env orqali)
-const BOT_USERNAME    = process.env.CUSTOMER_BOT_USERNAME?.replace("@", "") || "";
-const STARTAPP_PAYLOAD = "dashboard";
+const { GROUP_CHAT_ID, WEBAPP_URL, CUSTOMER_BOT_USERNAME } = require("../config");
 
 async function ensurePinnedMiniAppLinkInGroup(bot) {
     const groupId = GROUP_CHAT_ID;
-    if (!groupId) return;
 
-    const miniAppDeepLink = `https://t.me/${process.env.BOT_USERNAME || BOT_USERNAME}?startapp=${encodeURIComponent(STARTAPP_PAYLOAD)}`;
-    const printUrl = WEBAPP_URL
-        ? String(WEBAPP_URL).replace(/\/+$/, "") + "/print"
-        : null;
+    // GROUP_CHAT_ID bo'sh bo'lsa — ogohlantirish va chiqish
+    if (!groupId) {
+        console.warn("⚠️ [pinMessage] GROUP_CHAT_ID .env da yo'q — pin qilinmadi");
+        return { ok: false, error: "GROUP_CHAT_ID empty" };
+    }
+
+    // Admin bot username ni botdan olamiz — env dan emas
+    let adminBotUsername = "";
+    try {
+        const me = await bot.getMe();
+        adminBotUsername = me.username || "";
+    } catch (e) {
+        console.error("❌ [pinMessage] bot.getMe() xato:", e?.message);
+        return { ok: false, error: e?.message };
+    }
+
+    const webappBase   = WEBAPP_URL ? String(WEBAPP_URL).replace(/\/+$/, "") : "";
+    const dashboardUrl = webappBase || `https://t.me/${adminBotUsername}?startapp=dashboard`;
+    const printUrl     = webappBase ? webappBase + "/print" : null;
 
     try {
         const chat   = await bot.getChat(groupId);
         const pinned = chat?.pinned_message;
-        const kb     = pinned?.reply_markup?.inline_keyboard || [];
-        const flat   = kb.flat();
-        const hasLink = flat.some(b => b?.url === miniAppDeepLink || b?.web_app?.url === printUrl);
 
-        // Allaqachon to'g'ri pin bor — tegmaymiz
-        if (pinned && hasLink) {
-            console.log("✅ Pin xabar allaqachon mavjud");
+        // Tugmalarni tekshirish — allaqachon to'g'ri pin bormi?
+        const kb   = pinned?.reply_markup?.inline_keyboard || [];
+        const flat = kb.flat();
+        const hasOurLink = flat.some(b =>
+            b?.url === dashboardUrl ||
+            b?.web_app?.url === printUrl ||
+            (b?.url && b.url.includes("startapp=dashboard"))
+        );
+
+        if (pinned && hasOurLink) {
+            console.log("✅ [pinMessage] Pin allaqachon mavjud — tegmadik");
             return { ok: true, updated: false };
         }
 
@@ -34,8 +49,9 @@ async function ensurePinnedMiniAppLinkInGroup(bot) {
             await bot.unpinChatMessage(groupId, { message_id: pinned.message_id }).catch(() => {});
         }
 
-        const text = "📊 <b>TOTLI — Boshqaruv markazi</b>\n\n👇 Kerakli tugmani bosing:";
-        const newKb = [[{ text: "📊 Dashboard (Mini App)", url: miniAppDeepLink }]];
+        // Yangi pin xabar
+        const text  = "📊 <b>TOTLI — Boshqaruv markazi</b>\n\n👇 Kerakli tugmani bosing:";
+        const newKb = [[{ text: "📊 Dashboard", web_app: { url: dashboardUrl } }]];
         if (printUrl) {
             newKb.push([{ text: "🖨 Print Station — Chek chiqarish", web_app: { url: printUrl } }]);
         }
@@ -48,13 +64,15 @@ async function ensurePinnedMiniAppLinkInGroup(bot) {
 
         await bot.pinChatMessage(groupId, sent.message_id, {
             disable_notification: true,
-        }).catch(() => {});
+        }).catch((e) => {
+            console.warn("⚠️ [pinMessage] pinChatMessage xato (bot admin emasmi?):", e?.message);
+        });
 
-        console.log("📌 Pin xabar yaratildi/yangilandi");
+        console.log("📌 [pinMessage] Pin xabar yuborildi va pin qilindi");
         return { ok: true, updated: true };
 
     } catch (e) {
-        console.error("❌ ensurePinnedMiniAppLinkInGroup:", e?.message || e);
+        console.error("❌ [pinMessage] Xato:", e?.message || e);
         return { ok: false, error: e?.message };
     }
 }
