@@ -1,125 +1,105 @@
 // src/services/pinMessage.js
-// Guruhga PIN xabar — har kuni bir marta tekshiriladi
-// Bot admin bo'lishi va "Pin messages" ruxsati bo'lishi shart
-
 const { WEBAPP_URL } = require("../config");
 
-// ── Ichki holat — kun davomida bir marta yuborilsin ──────
-let _lastPinCheck  = 0;        // ms
-let _pinCheckGap   = 60 * 60 * 1000; // 1 soat — qayta tekshirish oralig'i
+let _lastPinCheck = 0;
+let _sentMessageId = null; // oxirgi yuborilgan xabar ID
 
-// ── Asosiy funksiya ──────────────────────────────────────
 async function ensurePinnedMiniAppLinkInGroup(bot, forceSend = false) {
-    // GROUP_CHAT_ID — .env dan olamiz (har safar yangi qiymat bo'lishi uchun)
-    const rawId = process.env.GROUP_CHAT_ID || "";
-    if (!rawId) {
-        console.warn("⚠️ [pin] GROUP_CHAT_ID .env da yo'q");
+    const rawId = (process.env.GROUP_CHAT_ID || "").trim();
+    if (!rawId || rawId === "-") {
+        console.warn("⚠️ [pin] GROUP_CHAT_ID yo'q yoki bo'sh");
         return { ok: false };
     }
 
-    // Manfiy raqam bo'lishi shart (-100...)
+    // Supergroup ID — manfiy bo'lishi shart
     const groupId = rawId.startsWith("-") ? rawId : `-${rawId}`;
 
-    // Vaqt filtri — tez-tez chaqirilsa ham bir soatda bir marta ishlaydi
+    // Throttle — forceSend bo'lmasa 1 soatda 1 marta
     const now = Date.now();
-    if (!forceSend && now - _lastPinCheck < _pinCheckGap) {
+    if (!forceSend && now - _lastPinCheck < 3600_000) {
         return { ok: true, skipped: true };
     }
     _lastPinCheck = now;
 
-    // WebApp URL
-    const base       = WEBAPP_URL ? String(WEBAPP_URL).replace(/\/+$/, "") : "";
-    const dashUrl    = base || "https://totli-inky.vercel.app";
-    const printUrl   = base ? base + "/print" : null;
+    const base     = (WEBAPP_URL || "https://totli-inky.vercel.app").replace(/\/+$/, "");
+    const dashUrl  = base;
+    const printUrl = base + "/print";
 
     try {
-        // ── Bot o'zi haqida ma'lumot ──────────────────────
-        const me = await bot.getMe();
-
-        // ── Guruh pinini tekshirish ───────────────────────
-        const chat   = await bot.getChat(groupId);
-        const pinned = chat?.pinned_message;
-
-        // Pin bor va bizniki — tegmaymiz
-        if (!forceSend && pinned) {
-            const kb   = (pinned.reply_markup?.inline_keyboard || []).flat();
-            const ours = kb.some(b =>
-                (b?.web_app?.url && b.web_app.url.startsWith(base || "https://totli")) ||
-                (b?.url          && b.url.startsWith(base || "https://totli"))
-            );
-            if (ours) {
-                console.log("✅ [pin] Pin allaqachon to'g'ri — tegmadik");
-                return { ok: true, updated: false };
-            }
+        // ── Tekshirish: eski pinimiz bormi ──────────────
+        if (!forceSend && _sentMessageId) {
+            // Avval yuborilgan xabarimiz hali pin bo'lsa — chiqamiz
+            try {
+                const chat   = await bot.getChat(groupId);
+                const pinned = chat?.pinned_message;
+                if (pinned?.message_id === _sentMessageId) {
+                    console.log("✅ [pin] Pin hali turibdi — tegmadik");
+                    return { ok: true, updated: false };
+                }
+            } catch {}
         }
 
-        // Eski pinni yechamiz
-        if (pinned?.message_id) {
-            await bot.unpinChatMessage(groupId, { message_id: pinned.message_id }).catch(() => {});
-        }
-
-        // ── Hisobot xabari matni ──────────────────────────
+        // ── Yangi xabar yuborish ─────────────────────────
         const d    = new Date(new Date().toLocaleString("en", { timeZone: "Asia/Tashkent" }));
-        const date = `${d.getDate()}-${d.toLocaleString("uz", { month: "short" })}`;
+        const date = `${d.getDate()}.${String(d.getMonth()+1).padStart(2,"0")}.${d.getFullYear()}`;
 
         const text =
-            `📊 <b>TOTLI — Kunlik boshqaruv</b>\n` +
+            `📊 <b>TOTLI — Boshqaruv markazi</b>\n` +
             `📅 ${date} | 🍰 Totli tortlar\n\n` +
-            `👇 Dashboard ni oching yoki chek stansiyasini ishga tushiring:`;
+            `👇 Dashboard va chek stansiyasini oching:`;
 
-        // ── Inline tugmalar ──────────────────────────────
-        const kb = [[{ text: "📊 Dashboard", web_app: { url: dashUrl } }]];
-        if (printUrl) {
-            kb.push([{ text: "🖨 Print Station", web_app: { url: printUrl } }]);
-        }
-
-        // ── Xabar yuborish ───────────────────────────────
         const sent = await bot.sendMessage(groupId, text, {
             parse_mode: "HTML",
-            reply_markup: { inline_keyboard: kb },
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "📊 Dashboard", web_app: { url: dashUrl } }],
+                    [{ text: "🖨 Print Station", web_app: { url: printUrl } }],
+                ]
+            },
             disable_web_page_preview: true,
         });
 
+        _sentMessageId = sent.message_id;
+        console.log(`📤 [pin] Xabar yuborildi: ${sent.message_id}`);
+
         // ── Pin qilish ───────────────────────────────────
-        await bot.pinChatMessage(groupId, sent.message_id, {
-            disable_notification: true,
-        }).then(() => {
-            console.log(`📌 [pin] Guruhga pin xabar yuborildi va pin qilindi`);
-        }).catch((e) => {
-            console.warn(`⚠️ [pin] Pin qilishda xato: ${e?.message}`);
-            console.warn("⚠️ [pin] Bot guruhda admin bo'lishi va 'Pin messages' ruxsati bo'lishi kerak");
-        });
+        try {
+            await bot.pinChatMessage(groupId, sent.message_id, {
+                disable_notification: true,
+            });
+            console.log("📌 [pin] Pin qilindi ✅");
+        } catch (pinErr) {
+            const pm = pinErr?.message || "";
+            if (pm.includes("not enough rights") || pm.includes("CHAT_ADMIN_REQUIRED")) {
+                console.warn("⚠️ [pin] Bot 'Pin messages' ruxsatiga ega emas — admin sozlamalarida yoqing");
+            } else {
+                console.warn("⚠️ [pin] Pin xato:", pm);
+            }
+        }
 
         return { ok: true, updated: true, messageId: sent.message_id };
 
     } catch (e) {
-        const msg = e?.message || String(e);
-
-        if (msg.includes("chat not found") || msg.includes("400")) {
-            console.error(`❌ [pin] Guruh topilmadi: ${groupId}`);
-            console.error("❌ [pin] Tekshiring: 1) GROUP_CHAT_ID to'g'rimi? 2) Bot guruhda a'zomi?");
-        } else if (msg.includes("403") || msg.includes("Forbidden")) {
-            console.error(`❌ [pin] Bot guruhga xabar yubora olmaydi — admin qiling`);
-        } else {
-            console.error(`❌ [pin] Xato: ${msg}`);
-        }
-
-        return { ok: false, error: msg };
+        const em = e?.message || String(e);
+        if (em.includes("chat not found"))   console.error(`❌ [pin] Guruh topilmadi (${groupId}) — bot guruhga qo'shilganmi?`);
+        else if (em.includes("Forbidden"))   console.error(`❌ [pin] Bot guruhga xabar yubora olmaydi — admin qiling`);
+        else if (em.includes("ETIMEDOUT"))   console.warn(`⚠️ [pin] Tarmoq xatosi — keyingi tekshirishda urinadi`);
+        else                                  console.error(`❌ [pin] Xato:`, em);
+        return { ok: false, error: em };
     }
 }
 
-// ── Kunlik scheduler — har 2 soatda pin tekshirish ───────
 function schedulePinChecker(bot) {
-    // Dastlabki tekshirish — 10 soniyadan keyin
-    setTimeout(() => ensurePinnedMiniAppLinkInGroup(bot).catch(() => {}), 10_000);
+    // Bot ishga tushgandan 15 soniya keyin
+    setTimeout(() => ensurePinnedMiniAppLinkInGroup(bot).catch(() => {}), 15_000);
 
     // Har 2 soatda tekshiradi
     setInterval(() => {
-        _lastPinCheck = 0; // reset — tekshirishga majburlaydi
+        _lastPinCheck = 0;
         ensurePinnedMiniAppLinkInGroup(bot).catch(() => {});
     }, 2 * 60 * 60 * 1000);
 
-    console.log("📌 [pin] Scheduler: ishga tushdi (har 2 soatda tekshiradi)");
+    console.log("📌 [pin] Scheduler ishga tushdi — har 2 soatda tekshiradi");
 }
 
 module.exports = { ensurePinnedMiniAppLinkInGroup, schedulePinChecker };
