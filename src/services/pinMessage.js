@@ -44,20 +44,22 @@ async function ensurePinnedMiniAppLinkInGroup(bot, forceSend = false) {
         const date = `${d.getDate()}.${String(d.getMonth()+1).padStart(2,"0")}.${d.getFullYear()}`;
 
         const text =
-            `📊 <b>TOTLI — Boshqaruv markazi</b>\n` +
-            `📅 ${date} | 🍰 Totli tortlar\n\n` +
-            `👇 Dashboard va chek stansiyasini oching:`;
+        `📈 <b>TOTLI boshqaruv paneliga kirish</b>\n` ;
 
         const sent = await bot.sendMessage(groupId, text, {
-            parse_mode: "HTML",
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "📊 Dashboard", web_app: { url: dashUrl } }],
-                    [{ text: "🖨 Print Station", web_app: { url: printUrl } }],
-                ]
-            },
-            disable_web_page_preview: true,
-        });
+    parse_mode: "HTML",
+    reply_markup: {
+        inline_keyboard: [
+            [
+                {
+                    text: "📊 Hisobotlar",
+                    url: "https://t.me/totlisang_bot?startapp",
+                }
+            ]
+        ]
+    },
+    disable_web_page_preview: true,
+});
 
         _sentMessageId = sent.message_id;
         console.log(`📤 [pin] Xabar yuborildi: ${sent.message_id}`);
