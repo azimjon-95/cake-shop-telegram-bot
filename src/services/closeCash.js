@@ -18,14 +18,18 @@ const { GROUP_CHAT_ID }        = require("../config");
 function buildCloseReportText({ saleSum, expenseSum, debtSum, balance, from, to, tortCount }) {
     const pad = "─".repeat(30);
     let msg = `🔒 <b>KASSA YOPILDI</b>\n`;
-    msg += `📅 ${formatMonthYear(new Date())}\n`;
+    
+    // ✅ Eng ishonchli bugungi sana
+    msg += `📅 ${formatMonthYear()}\n`;           // dayjs ichida TZ bor
     msg += `⏰ ${formatHM(from)} → ${formatHM(to)}\n`;
     msg += `${pad}\n\n`;
+
     msg += `💰 <b>Sotuv (tushgan):</b> ${formatMoney(saleSum)} so'm\n`;
     msg += `💸 <b>Chiqim:</b> ${formatMoney(expenseSum)} so'm\n`;
     msg += `📊 <b>Sof foyda:</b> ${formatMoney(Math.max(0, saleSum - expenseSum))} so'm\n`;
     msg += `📌 <b>Qarzlar:</b> ${formatMoney(debtSum)} so'm\n`;
     msg += `🏦 <b>Kassa:</b> ${formatMoney(balance)} so'm\n`;
+    
     if (tortCount !== null && tortCount !== undefined) {
         msg += `\n${pad}\n`;
         msg += `🎂 <b>Qolgan tort:</b> ${tortCount} ta\n`;

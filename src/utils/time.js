@@ -1,32 +1,37 @@
+
 // src/utils/time.js
 const dayjs = require("dayjs");
+const utc = require("dayjs/plugin/utc");
+const timezone = require("dayjs/plugin/timezone");
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
 const { UZ_MONTHS } = require("./months");
 
 function nowISO() {
-    return new Date();
+    return dayjs().tz("Asia/Tashkent").toDate();
 }
 
 function startOfToday() {
-    const d = dayjs();
-    return d.startOf("day").toDate();
+    return dayjs().tz("Asia/Tashkent").startOf("day").toDate();
 }
 
-function formatDT(d) {
-    const dd = dayjs(d);
-    return dd.format("YYYY-MM-DD HH:mm");
-}
-
-function formatMonthYear(date) {
-    const d = new Date(date);
-    const monthName = UZ_MONTHS[d.getMonth()]; // 0–11
-    const year = String(d.getFullYear()).slice(-2); // 26
+function formatMonthYear(date = new Date()) {
+    const d = dayjs(date).tz("Asia/Tashkent");
+    const monthName = UZ_MONTHS[d.month()];
+    const year = String(d.year()).slice(-2);
     return `${monthName}-${year}`;
 }
 
-// ✅ yangi: faqat HH:mm
 function formatHM(d) {
-    const dd = dayjs(d);
-    return dd.format("HH:mm");
+    return dayjs(d).tz("Asia/Tashkent").format("HH:mm");
 }
 
-module.exports = { nowISO, startOfToday, formatDT, formatHM, formatMonthYear };
+module.exports = { 
+    nowISO, 
+    startOfToday, 
+    formatDT: (d) => dayjs(d).tz("Asia/Tashkent").format("YYYY-MM-DD HH:mm"),
+    formatHM, 
+    formatMonthYear 
+};
