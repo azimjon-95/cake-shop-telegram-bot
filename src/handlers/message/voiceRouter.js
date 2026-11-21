@@ -33,20 +33,65 @@ function voiceErrorText(err) {
     return "❌ Ovoz tahlilida xatolik. Qayta yuboring yoki matn kiriting.";
 }
 
+// ── Ovoz oqimi qoidalari ─────────────────────────────────
+const MAX_VOICE_SEC = Number(process.env.VOICE_MAX_SEC || 40);   // uzun gap = sotuv emas, token tejaymiz
+const MIN_VOICE_SEC = 1;
+
+// Ovoz bilan emas, qo'lda (matn) kiritiladigan rejimlar
+const STRUCTURED_MODES = new Set([
+    "await_password", "add_worker", "close_cash_tort", "owner_withdraw_amount", "owner_withdraw_desc"
+]);
+
+// Matnda sotuvga o'xshash narsa bormi? (AI ga bormasdan oldin — token sarflamaslik uchun)
+const SPOKEN_NUMS = /(^|\s)(bir|bitta|ikki|ikkita|uch|uchta|to['‘’`]?rt(ta)?\s*(ming|yuz|ta|dona)|besh|olti|yetti|sakkiz|to['‘’`]?qqiz|o['‘’`]?n|yigirma|o['‘’`]?ttiz|qirq|ellik|oltmish|yetmish|sakson|to['‘’`]?qson|yuz)(\s|$)/i;
+function looksLikeSaleSpeech(text) {
+    const t = String(text || "").toLowerCase();
+    if (t.length < 4) return false;
+    if (/\d/.test(t)) return true;                       // "140 ming", "2 ta"
+    if (/\b(ming|million|mln|so['‘’`]?m)\b/.test(t)) return true;
+    return SPOKEN_NUMS.test(t);                            // "yuz qirq ming"
+}
+
+function esc(x) {
+    return String(x || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// "Tort 140000, Sham 2ta 5000" — har bir qismdagi oxirgi son narx; <1000 bo'lsa shubhali
+function findSuspiciousPrice(norm) {
+    for (const part of String(norm).split(/[,;]/)) {
+        const p = part.trim();
+        if (!p || /^(berdi|tel)\b/i.test(p)) continue;
+        const nums = p.replace(/\d+\s*(ta|dona|x)\b/gi, " ").match(/\d+/g);
+        if (!nums) return p;                 // narxsiz qism
+        const price = Number(nums[nums.length - 1]);
+        if (price < 1000) return p;
+    }
+    return null;
+}
+
 // ── Asosiy router ────────────────────────────────────────
 async function routeVoiceMessage(bot, msg) {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const rawMode    = await getMode(userId);
-    const mode       = !rawMode || rawMode === "menu" ? "sale" : rawMode;
+    const mode   = await getMode(userId);
 
+    // Chiqim rejimida — chiqim; qo'lda kiritiladigan rejimlarda — ogohlantirish;
+    // boshqa hamma holatda (menyu, sotuv, bo'sh) — avtomatik SOTUV (tugma bosish shart emas)
     if (mode === "expense") return handleExpenseVoice(bot, msg);
-    if (mode === "sale")    return handleSaleVoice(bot, msg);
 
-    return bot.sendMessage(chatId,
-        "⚠️ Ovoz faqat sotuv yoki chiqim rejimida ishlaydi.\n" +
-        "Tugmalardan birini tanlang: 🧁 Sotish yoki 💸 Chiqim"
-    );
+    if (STRUCTURED_MODES.has(mode)) {
+        return bot.sendMessage(chatId, "⚠️ Hozir ovoz qabul qilinmaydi. Javobni matn bilan yozing.");
+    }
+
+    return handleSaleVoice(bot, msg);
+}
+
+// Ovoz davomiyligi tekshiruvi — yuklab olishdan oldin (bepul)
+function voiceDurationProblem(msg) {
+    const d = Number(msg.voice?.duration || 0);
+    if (d && d < MIN_VOICE_SEC) return "short";
+    if (d > MAX_VOICE_SEC) return "long";
+    return null;
 }
 
 // ── SOTUV — ovoz ────────────────────────────────────────
@@ -55,6 +100,15 @@ async function handleSaleVoice(bot, msg) {
     const userId = msg.from?.id;
     const seller = { tgId: userId, tgName: getUserName(msg) };
 
+    // 0. Davomiylik (uzun gap / bo'sh ovoz — STT ham, AI ham ishlamaydi)
+    const problem = voiceDurationProblem(msg);
+    if (problem === "long") {
+        return bot.sendMessage(chatId,
+            `⚠️ Ovoz juda uzun (>${MAX_VOICE_SEC} soniya). Faqat sotuvni ayting:\n<i>"Tort 140 ming, sham 2 ta 5 ming"</i>`,
+            { parse_mode: "HTML" });
+    }
+    if (problem === "short") return; // tasodifiy bosish — jim
+
     const waitMsg = await bot.sendMessage(chatId,
         "🎤 <b>Ovoz qabul qilindi</b>\n⏳ Matniga o'girmoqda...",
         { parse_mode: "HTML" }
@@ -62,7 +116,7 @@ async function handleSaleVoice(bot, msg) {
 
     try {
         // 1. STT — ovoz → matn
-        const spoken = await transcribeTelegramVoice(bot, msg.voice.file_id);
+        const spoken = await transcribeTelegramVoice(bot, msg.voice.file_id, { kind: "sale" });
 
         if (!spoken || spoken.length < 3) {
             await bot.editMessageText(
@@ -72,9 +126,19 @@ async function handleSaleVoice(bot, msg) {
             return;
         }
 
+        // 1b. Sotuvga o'xshamasa — AI ga umuman yubormaymiz (token tejash)
+        if (!looksLikeSaleSpeech(spoken)) {
+            await bot.editMessageText(
+                `🙅 Bu sotuv emas — o'tkazib yuborildi.\n🎤 <i>${esc(spoken)}</i>\n\n` +
+                `Faqat sotuvni ayting: <i>"Tort 140 ming, sham 2 ta 5 ming"</i>`,
+                { chat_id: chatId, message_id: waitMsg?.message_id, parse_mode: "HTML" }
+            ).catch(() => {});
+            return;
+        }
+
         // 2. Matnni ko'rsatamiz
         await bot.editMessageText(
-            `🎤 <b>Eshitildi:</b> <i>${spoken}</i>\n\n⚙️ AI tahlil qilmoqda...`,
+            `🎤 <b>Eshitildi:</b> <i>${esc(spoken)}</i>\n\n⚙️ AI tahlil qilmoqda...`,
             { chat_id: chatId, message_id: waitMsg?.message_id, parse_mode: "HTML" }
         ).catch(() => {});
 
@@ -83,16 +147,26 @@ async function handleSaleVoice(bot, msg) {
 
         if (!normalized) {
             await bot.sendMessage(chatId,
-                `⚠️ Sotuv aniqlanmadi.\n\n🎤 Eshitildi: <i>${spoken}</i>\n\n` +
+                `⚠️ Sotuv aniqlanmadi.\n\n🎤 Eshitildi: <i>${esc(spoken)}</i>\n\n` +
                 "Aniqroq ayting:\n<i>\"Tort Napoleon yuz qirq ming, berdi uch yuz ming\"</i>",
                 { parse_mode: "HTML" }
             );
             return;
         }
 
+        // 3b. Narx sanity: 1000 so'mdan kichik narx = noto'g'ri eshitilgan
+        const bad = findSuspiciousPrice(normalized);
+        if (bad) {
+            await bot.editMessageText(
+                `⚠️ Narx aniq emas ("${esc(bad)}"). Qayta ayting.\n🎤 <i>${esc(spoken)}</i>\n→ <code>${esc(normalized)}</code>`,
+                { chat_id: chatId, message_id: waitMsg?.message_id, parse_mode: "HTML" }
+            ).catch(() => {});
+            return;
+        }
+
         // 4. Natijani ko'rsatib, saqlash
         await bot.editMessageText(
-            `✅ <b>Tahlil qilindi:</b>\n<code>${normalized}</code>`,
+            `✅ <b>Tahlil qilindi:</b>\n<code>${esc(normalized)}</code>`,
             { chat_id: chatId, message_id: waitMsg?.message_id, parse_mode: "HTML" }
         ).catch(() => {});
 

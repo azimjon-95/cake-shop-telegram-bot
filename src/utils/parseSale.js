@@ -47,7 +47,13 @@ function cleanName(segment) {
     s = stripTelPart(s);
 
     s = s.replace(/\b\d+\s*(ta|dona|x)\b/gi, " ");
-    s = s.replace(/\b\d+\s*(min|ming|minga|mingdan)\b/gi, " ");
+    s = s.replace(/\b\d+\s*(min|ming|minga|mingdan|mingga)\b/gi, " ");
+
+    // gap so'zlari nomga kirmasin: "tort sotildi 140ming ga" → "tort"
+    s = s.replace(/\b(sotildi|sotdim|sotdi|sotib|ga|va)\b/gi, " ");
+
+    // "125000-0" / "140000-100000" (narx-to'langan) nomga kirmasin
+    s = s.replace(/\d+(?:[.,]\d+)?\s*-\s*\d+(?:[.,]\d+)?/g, " ");
 
     // oxirdagi pul bo‘lib qolgan sonlarni ham tozalaymiz
     s = s.replace(/\b\d+\s*$/g, " ");
@@ -118,6 +124,8 @@ function splitSegments(input) {
 
         // ❗ QTY bo‘lsa pul emas
         if (/\b\d+\s*(ta|dona|x)\b/i.test(s)) return false;
+        // "2 ta" (bo'sh joy bilan aytilgan) — ham miqdor
+        if (/^\d+$/.test(s) && next && /^(ta|dona|x)$/i.test(next)) return false;
 
         const digits = s.replace(/[^\d]/g, "");
         const n = parseInt(digits || "0", 10) || 0;

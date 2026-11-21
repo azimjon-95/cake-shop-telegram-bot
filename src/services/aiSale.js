@@ -14,27 +14,45 @@ function mapAiError(err) {
     return new Error("OPENAI_AI_FAILED");
 }
 
-const SYSTEM_PROMPT = `Siz tort do'koni uchun sotuv matnini standartlashtirasiz.
-FAQAT 1 qator toza natija qaytaring. Izoh yozmang. Prefiks yozmang.
+// Katalog nomlari — AI ovozdan eshitilgan nomni (masalan "shap" → "Sham") to'g'ri nomga moslashtirsin
+function catalogNames() {
+    try {
+        const { SALE_TEMPLATE_ITEMS } = require("../logic/saleDraft");
+        return [...new Set(Object.values(SALE_TEMPLATE_ITEMS).flat().map(x => x.name))];
+    } catch { return []; }
+}
 
-FORMAT: Mahsulot [miqdor]ta [narx], Mahsulot2 [narx], berdi [to'langan], tel [raqam]
+function buildSystemPrompt() {
+    return `Tort do'koni kassiri ovozli xabarini sotuv qatoriga aylantirasiz.
+Faqat 1 qator natija yoki NO qaytaring. Izoh, prefiks yozmang.
+
+FORMAT: Mahsulot [N]ta narx, Mahsulot2 narx, tel 901234567
+(narx = BIR DONA narxi, so'mda. "140 ming"/"140ming"/"yuz qirq ming" → 140000, "5 minga" → 5000)
+TO'LOV: standart — to'liq to'langan (hech narsa yozilmaydi).
+  Qarzga / to'lamadi → narxdan keyin "-0":  Tort 125000-0
+  Qisman to'ladi (mijoz X berdi) → "-X":  Tort 140000-100000  (faqat 1 dona tovar uchun)
 
 QOIDALAR:
-1. Narxlar: "bir yuz yigirma ming" → 120000, "120ming" → 120000, "yuz ellik" → 150000
-2. Miqdor: "ikkita" → 2ta, "3 dona" → 3ta
-3. To'langan pul: "berdi 300 ming", "to'ladi 200", "naqd 150000"  
-4. Qarz: agar berdi < jami → qarz avtomatik aniqlanadi
-5. Telefon: "tel 901234567" yoki "998901234567"
-6. Mahsulot nomlari: tort turlarini to'g'ri yoz (Tort Shokoladniy, Bento, Perojniy, Pepsi...)
+- Sotuv bo'lsa (mahsulot + narx): format bo'yicha yozing. "sotildi/sotdim/berdi/ga/dan" kabi so'zlar nomga kirmaydi.
+- Miqdor: "2 ta", "ikkita", "2 dona" → 2ta. Aytilmasa miqdor yozilmaydi.
+- Mahsulot nomi: quyidagi katalogdagi eng yaqin nomga moslang; mos kelmasa eshitilganicha bosh harf bilan yozing.
+- Mahsulot aytilmasdan faqat "tort 140 ming" desa → "Tort 140000".
+- Sotuvga aloqasi yo'q gap (salom, savol, suhbat, narxsiz/mahsulotsiz) → faqat: NO
+- Narx aniq bo'lmasa → NO
 
-MISOL KIRITMA: "ikkita shokolad tort yuz yigirma mingdan bir dona bento yetmish uch ming berdi uch yuz ellik ming"
-MISOL NATIJA: Tort Shokoladniy 2ta 120000, Bento 1ta 73000, berdi 350000
+KATALOG: ${catalogNames().join(", ")}
 
-MISOL KIRITMA: "napoleon tort 140 mingdan bir dona sotdim telefon 901234567"
-MISOL NATIJA: Tort Napoleon 140000, tel 901234567
+MISOL: "tort sotildi 140 mingga shap 2 ta 5 minga" → Tort 140000, Sham 2ta 5000
+MISOL: "ikkita shokolad tort yuz yigirma mingdan bir dona bento yetmish ming berdi uch yuz ellik ming" → Tort Shokoladniy 2ta 120000, Bento 70000
+MISOL: "damashniy tort 140 ming" → Tort Damashniy 140000
+MISOL: "rafaello qarzga yuz yigirma besh ming tel 901234567" → Tort Rafaello 125000-0, tel 901234567
+MISOL: "bugun havo yaxshi ekan" → NO`;
+}
 
-MISOL KIRITMA: "rafaello tort yuz yigirma ming qarzga"
-MISOL NATIJA: Tort Rafaello 120000, berdi 0`;
+// AI "NO" qaytarsa — sotuv emas
+function isNoSale(text) {
+    return /^\s*no\b/i.test(String(text || "")) || !String(text || "").trim();
+}
 
 async function normalizeSaleTextWithAI(rawText) {
     const input = String(rawText || "").trim();
@@ -44,14 +62,15 @@ async function normalizeSaleTextWithAI(rawText) {
         const resp = await openai.chat.completions.create({
             model: process.env.OPENAI_MODEL || "gpt-4o-mini",
             temperature: 0,
-            max_tokens: 120,
+            max_tokens: 80,
             messages: [
-                { role: "system", content: SYSTEM_PROMPT },
-                { role: "user",   content: input }
+                { role: "system", content: buildSystemPrompt() },
+                { role: "user",   content: input.slice(0, 400) }
             ]
         });
 
-        return String(resp.choices?.[0]?.message?.content || "").trim();
+        const out = String(resp.choices?.[0]?.message?.content || "").trim();
+        return isNoSale(out) ? "" : out.split("\n")[0].trim();
     } catch (err) {
         console.error("AI_SALE_ERROR:", { message: err?.message, status: err?.status });
         throw mapAiError(err);

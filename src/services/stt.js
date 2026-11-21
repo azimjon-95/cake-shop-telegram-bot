@@ -78,7 +78,16 @@ function mapOpenAiError(err) {
     return new Error("OPENAI_STT_FAILED");
 }
 
-async function transcribeTelegramVoice(bot, fileId) {
+// Sotuv ovozi uchun tayanch matn: mahsulot nomlari va "ming" aytilishi — raqam/nom aniqroq chiqadi
+function saleHintPrompt() {
+    try {
+        const { SALE_TEMPLATE_ITEMS } = require("../logic/saleDraft");
+        const names = [...new Set(Object.values(SALE_TEMPLATE_ITEMS).flat().map(x => x.name))].join(", ");
+        return `Tort do'koni sotuvi. Mahsulotlar: ${names}. Narxlar: 140 ming, 5 ming, 120 ming. Miqdor: 2 ta.`;
+    } catch { return undefined; }
+}
+
+async function transcribeTelegramVoice(bot, fileId, opts = {}) {
     if (!process.env.OPENAI_API_KEY) {
         throw new Error("OPENAI_API_KEY_MISSING");
     }
@@ -94,10 +103,24 @@ async function transcribeTelegramVoice(bot, fileId) {
         await downloadFile(fileUrl, oggPath);
         await ffmpegToWav(oggPath, wavPath);
 
-        const tr = await openai.audio.transcriptions.create({
-            file: fs.createReadStream(wavPath),
-            model: "gpt-4o-mini-transcribe"
-        });
+        const params = { model: "gpt-4o-mini-transcribe" };
+        const lang = process.env.STT_LANGUAGE === undefined ? "uz" : process.env.STT_LANGUAGE;
+        if (lang) params.language = lang;
+        if (opts.kind === "sale") {
+            const hint = saleHintPrompt();
+            if (hint) params.prompt = hint;
+        }
+
+        let tr;
+        try {
+            tr = await openai.audio.transcriptions.create({ ...params, file: fs.createReadStream(wavPath) });
+        } catch (e) {
+            // Til/prompt qo'llab-quvvatlanmasa — oddiy rejimda qayta urinamiz
+            if (e?.status === 400 && (params.language || params.prompt)) {
+                delete params.language; delete params.prompt;
+                tr = await openai.audio.transcriptions.create({ ...params, file: fs.createReadStream(wavPath) });
+            } else throw e;
+        }
 
         return String(tr?.text || "").trim();
     } catch (err) {
