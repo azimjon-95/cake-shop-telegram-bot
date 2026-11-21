@@ -165,7 +165,17 @@ async function handleSaleVoice(bot, msg) {
         ).catch(() => {});
 
         // 3. AI normalizatsiya
-        const normalized = await normalizeSaleTextWithAI(spoken);
+        // AI asosiy; AI ishlamasa (limit/tarmoq/xato) — dastur o'zi (parseSale) zahira sifatida tahlil qiladi
+        let normalized, usedFallback = false;
+        try {
+            normalized = await normalizeSaleTextWithAI(spoken);
+        } catch (aiErr) {
+            console.error("VOICE_SALE_AI_FALLBACK:", aiErr?.message);
+            const local = parseSaleMessage(spoken);
+            if (!local.items.length) throw aiErr;          // zahira ham topolmadi → odatiy xato xabari
+            normalized = spoken;
+            usedFallback = true;
+        }
 
         if (!normalized) {
             await bot.sendMessage(chatId,
@@ -194,6 +204,7 @@ async function handleSaleVoice(bot, msg) {
 
         // 5. Ikkinchi himoya: narxlar gapda haqiqatan aytilganmi?
         const v = verifySale(spoken, normalized);
+        if (!v.ok && usedFallback) v.reasons.unshift("AI ishlamadi, dastur tahlili");
         if (!v.ok) {
             await redis.set(`vsale:${userId}`, JSON.stringify({ text: normalized }), "EX", 300);
             const lines = v.parsed.items.map(i => `• ${esc(i.name)} ${i.qty > 1 ? i.qty + " ta × " : ""}${formatMoney(i.price)}`).join("\n");
