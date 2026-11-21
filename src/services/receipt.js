@@ -43,7 +43,8 @@ async function redeemReceiptToken({ token, tgUser }) {
     if (!sale) return { ok: false, code: "SALE_MISSING" };
 
     const paidTotal   = Number(sale.paidTotal || 0);
-    const bonusPoints = Math.floor(paidTotal * 0.10);
+    // TEST filial sotuvi mijozga ball bermaydi
+    const bonusPoints = doc.branchId === "test" ? 0 : Math.floor(paidTotal * 0.10);
 
     // Token yopamiz
     doc.status          = "REDEEMED";

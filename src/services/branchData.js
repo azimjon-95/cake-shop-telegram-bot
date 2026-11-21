@@ -27,7 +27,7 @@ function otherBranchesDebt(sup) {
 
 // Bitta firmaning shu filialdagi qarzi
 function supplierDebtOf(sup, id) {
-    if (id === ALL) return Number(sup?.debt || 0);
+    if (id === ALL) return Math.max(0, Number(sup?.debt || 0) - Number(sup?.branchDebts?.test || 0)); // TEST qarzi jamiga kirmaydi
     const b = normBranch(id);
     if (b === DEFAULT_BRANCH) return Math.max(0, Number(sup?.debt || 0) - otherBranchesDebt(sup));
     return Math.max(0, Number(sup?.branchDebts?.[b] || 0));

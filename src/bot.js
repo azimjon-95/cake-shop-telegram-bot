@@ -5,6 +5,8 @@ const dns = require("dns");
 dns.setDefaultResultOrder("ipv4first");
 
 const TelegramBot = require("node-telegram-bot-api");
+const { installTestAutoDelete } = require("./services/notify");
+const { scheduleTestCleanup } = require("./services/testCleanup");
 const { BOT_TOKEN, GROUP_CHAT_ID, WEBAPP_URL } = require("./config");
 const { onCallback }   = require("./handlers/onCallback");
 const { onMessage }    = require("./handlers/onMessage");
@@ -170,6 +172,8 @@ async function createBot() {
     if (!BOT_TOKEN) throw new Error("BOT_TOKEN yo'q (.env)");
 
     const bot = createSafePollingBot(BOT_TOKEN, "TOTLI_BOT");
+    installTestAutoDelete(bot);   // 🧪 TEST filial guruh xabarlari 1 daqiqada o'chadi
+    scheduleTestCleanup();        // 🧪 TEST ma'lumotlari 1 soatda tozalanadi (PIN_TEST yoqilgan bo'lsa)
 
     schedulePinChecker(bot); // ✅ Har 2 soatda pin tekshiradi
     scheduleDailyAt2330(bot);

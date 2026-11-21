@@ -30,3 +30,13 @@ To'da balansi `balance:toda` kalitida.
 2. Deploy → `/filial` → To'da → `💰 Balansni tahrirlash` bilan To'da boshlang'ich kassasini kiriting
    (chiqim uchun balans kerak).
 3. To'da telefonida `https://<webapp>/print?branch=toda` ochiq tursin.
+
+## 🧪 TEST filial (dasturchi)
+`PIN_TEST` ni .env ga yozsangiz yoqiladi. Shu PIN bilan botga kirgan foydalanuvchi **TEST** filialida ishlaydi:
+- barcha sotuvchi funksiyalari (sotuv, ovozli sotuv, chiqim, kirim, qarz, kassa yopish) to'liq ishlaydi;
+- pul alohida `balance:test` da (boshlang'ich `TEST_START_BALANCE`), Sang/To'da balansiga tegmaydi;
+- guruhga ketgan xabarlar `TEST_GROUP_DELETE_SEC` (60s) dan keyin avtomatik o'chadi;
+- `branchId:"test"` yozuvlari `TEST_DATA_TTL_MIN` (60 daqiqa) dan keyin bazadan o'chadi, balans boshlang'ichga qaytadi;
+- jami hisobot/dashboard/oylik hisobot/firma qarzi jamiga kirmaydi; mijozga cashback ball berilmaydi;
+- admin `/filial` orqali ham TEST ga o'ta oladi.
+Cheklov: o'chirish taymerlari xotirada — bot qayta ishga tushsa, shu paytdagi guruh xabarlari qolib ketishi mumkin (ma'lumotlar baribir tozalanadi).

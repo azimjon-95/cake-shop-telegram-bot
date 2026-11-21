@@ -19,6 +19,7 @@ const als = new AsyncLocalStorage();
 
 const DEFAULT_BRANCH = "sang";
 const ALL = "all";
+const TEST_BRANCH = "test"; // dasturchi test filiali (PIN_TEST berilsa yoqiladi)
 
 // Env o'qish — har safar (testlarda va keyin o'zgarganda to'g'ri ishlashi uchun)
 function env(name, fallback = "") {
@@ -34,6 +35,24 @@ function groupId(raw) {
 
 // ── Filial ro'yxati ──────────────────────────────────────
 function getBranches() {
+    const out = getRealBranches();
+    const testPin = env("PIN_TEST");
+    if (testPin) {
+        out.test = {
+            id: TEST_BRANCH,
+            name: env("BRANCH_TEST_NAME", "🧪 TEST (dasturchi)"),
+            short: "TEST",
+            pin: testPin,
+            // Guruh xabarlari 1 daqiqada o'chadi (installTestAutoDelete)
+            groupChatId: groupId(env("GROUP_CHAT_ID_TEST", env("GROUP_CHAT_ID"))),
+            address: "", phone: "",
+            isTest: true,
+        };
+    }
+    return out;
+}
+
+function getRealBranches() {
     const sangPin = env("PIN_SANG", env("BOT_PASSWORD", "1234"));
     const sangGroup = groupId(env("GROUP_CHAT_ID_SANG", env("GROUP_CHAT_ID")));
 
@@ -60,8 +79,13 @@ function getBranches() {
     };
 }
 
+// Haqiqiy filiallar (hisobot, statistika, jami balans) — TEST kirmaydi
 function branchIds() {
-    return Object.keys(getBranches());
+    return Object.keys(getRealBranches());
+}
+
+function isTestBranch(id) {
+    return String(id || "").trim().toLowerCase() === TEST_BRANCH && !!getBranches().test;
 }
 
 // "sang" | "toda"  — noma'lum / bo'sh qiymat => sang
@@ -83,7 +107,7 @@ function branchName(id) {
 // boshqa → branchId = shu id
 // all   → filtr yo'q
 function branchFilter(id, field = "branchId") {
-    if (id === ALL) return {};
+    if (id === ALL) return { [field]: { $ne: TEST_BRANCH } }; // jami hisobga TEST aralashmaydi
     const b = normBranch(id);
     if (b === DEFAULT_BRANCH) return { [field]: { $in: [DEFAULT_BRANCH, null] } }; // null → maydon yo'qligini ham ushlaydi
     return { [field]: b };
@@ -196,7 +220,7 @@ function validateBranchConfig() {
 }
 
 module.exports = {
-    DEFAULT_BRANCH, ALL,
+    DEFAULT_BRANCH, ALL, TEST_BRANCH, isTestBranch,
     getBranches, getBranch, branchIds, normBranch, branchName,
     branchFilter, withBranch, matchBranch, sameBranch,
     balanceKey, allBalanceKeys,
