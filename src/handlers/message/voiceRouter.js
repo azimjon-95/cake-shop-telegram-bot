@@ -81,7 +81,8 @@ function verifySale(spoken, normalized) {
     const said = spokenAmounts(spoken);
     let total = 0;
     for (const it of parsed.items) {
-        if (!said.has(Number(it.price))) reasons.push(`narx ${it.price} gapda yo'q`);
+        // narx yoki (jami aytilganda) narx×miqdor gapda bo'lsa — mos
+        if (!said.has(Number(it.price)) && !said.has(Number(it.price) * Number(it.qty || 1))) reasons.push(`narx ${it.price} gapda yo'q`);
         if (it.qty > 30) reasons.push(`miqdor ${it.qty} katta`);
         if (it.price > 3000000) reasons.push(`narx ${it.price} juda katta`);
         total += it.price * it.qty;

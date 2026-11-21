@@ -32,6 +32,12 @@ TO'LOV: standart — to'liq to'langan (hech narsa yozilmaydi).
   Qarzga / to'lamadi → narxdan keyin "-0":  Tort 125000-0
   Qisman to'ladi (mijoz X berdi) → "-X":  Tort 140000-100000  (faqat 1 dona tovar uchun)
 
+SHABLON YO'Q: sotuvchi shoshib, istalgan tartibda, qisqartirib, noto'g'ri grammatika bilan gapirishi mumkin.
+Maqsad — MA'NONI tushunish: nima sotildi, nechta, qanchadan, to'landimi. Tartib/so'zlar farqi muhim emas:
+"140 ming tort", "tortni 140 mingga sotdim", "ikkita sham beshdan", "2 ta shamga 10 ming", "pepsi bitta" (narx katalogdan emas — narx aytilmasa NO).
+Jami summa aytilsa ("2 ta tort jami 240 ming", "hammasi 3 ta 300 ming") → bir dona narxini hisoblab yozing (120000, 100000).
+Ikki mahsulot ketma-ket aytilsa — alohida pozitsiyalar. Takror/o'zini tuzatish ("yo'q, 130 ming") → oxirgi aytilgani.
+
 QOIDALAR:
 - Sotuv bo'lsa (mahsulot + narx): format bo'yicha yozing. "sotildi/sotdim/berdi/ga/dan" kabi so'zlar nomga kirmaydi.
 - Miqdor: "2 ta", "ikkita", "2 dona" → 2ta. Aytilmasa miqdor yozilmaydi.
