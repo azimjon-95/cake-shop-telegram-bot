@@ -13,6 +13,8 @@ const { saveExpenseWithTx }       = require("../../logic/storage");
 const { expenseNotifyText }       = require("../../utils/report");
 const { sendToGroup }             = require("../../services/notify");
 const { formatMoney }             = require("../../utils/money");
+const { parseSaleMessage }        = require("../../utils/parseSale");
+const { spokenAmounts }           = require("../../utils/uzNumbers");
 const { expenseCategoryTitle }    = require("./helpers");
 
 // ── Xato matnlarini standartlashtirish ──────────────────
@@ -67,6 +69,26 @@ function findSuspiciousPrice(norm) {
         if (price < 1000) return p;
     }
     return null;
+}
+
+// AI natijasini gapga qarshi tekshirish. Qaytaradi: { ok, reasons[] }
+// ok=true → avtomatik saqlash xavfsiz; ok=false → sotuvchidan tasdiq so'raymiz
+function verifySale(spoken, normalized) {
+    const reasons = [];
+    const parsed = parseSaleMessage(normalized);
+    if (!parsed.items.length) return { ok: false, reasons: ["tushunilmadi"], parsed };
+
+    const said = spokenAmounts(spoken);
+    let total = 0;
+    for (const it of parsed.items) {
+        if (!said.has(Number(it.price))) reasons.push(`narx ${it.price} gapda yo'q`);
+        if (it.qty > 30) reasons.push(`miqdor ${it.qty} katta`);
+        if (it.price > 3000000) reasons.push(`narx ${it.price} juda katta`);
+        total += it.price * it.qty;
+    }
+    if (total > 10000000) reasons.push("jami juda katta");
+    if (parsed.items.length > 8) reasons.push("juda ko'p pozitsiya");
+    return { ok: reasons.length === 0, reasons, parsed };
 }
 
 // ── Asosiy router ────────────────────────────────────────
@@ -169,6 +191,22 @@ async function handleSaleVoice(bot, msg) {
             `✅ <b>Tahlil qilindi:</b>\n<code>${esc(normalized)}</code>`,
             { chat_id: chatId, message_id: waitMsg?.message_id, parse_mode: "HTML" }
         ).catch(() => {});
+
+        // 5. Ikkinchi himoya: narxlar gapda haqiqatan aytilganmi?
+        const v = verifySale(spoken, normalized);
+        if (!v.ok) {
+            await redis.set(`vsale:${userId}`, JSON.stringify({ text: normalized }), "EX", 300);
+            const lines = v.parsed.items.map(i => `• ${esc(i.name)} ${i.qty > 1 ? i.qty + " ta × " : ""}${formatMoney(i.price)}`).join("\n");
+            await bot.sendMessage(chatId,
+                `🤔 <b>Ishonchim komil emas — tasdiqlang</b>\n🎤 <i>${esc(spoken)}</i>\n\n${lines || esc(normalized)}\n\n` +
+                `<i>(${esc(v.reasons.join("; "))})</i>`,
+                { parse_mode: "HTML", reply_markup: { inline_keyboard: [[
+                    { text: "✅ Saqlash", callback_data: "vsale_ok" },
+                    { text: "❌ Bekor",   callback_data: "vsale_no" }
+                ]] } }
+            );
+            return;
+        }
 
         return processSaleInput(bot, msg, normalized, seller, { tryAI: false });
 
