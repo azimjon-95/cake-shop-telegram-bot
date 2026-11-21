@@ -4,9 +4,9 @@
 
 const Sale    = require("../models/Sale");
 const Expense = require("../models/Expense");
-const Counter = require("../models/Counter");
-
-const { GROUP_CHAT_ID, WEBAPP_URL, BOT_USERNAME, BAKER_TG_ID } = require("../config");
+const { WEBAPP_URL, BOT_USERNAME, BAKER_TG_ID } = require("../config");
+const { branchIds, normBranch, withBranch, branchName, groupFor, DEFAULT_BRANCH } = require("./branches");
+const { balanceFor } = require("./branchData");
 
 // ═══ MAHSULOT ANIQLASH — kuchli fuzzy matching ═══
 // Sotuvchilar har xil yozadi: "Tort", "tort 120", "shokoladli", "Benazir" va h.k.
@@ -88,7 +88,8 @@ function toMoney(n) { return Number(n||0).toLocaleString("uz-UZ"); }
 function pad(v)     { return String(v).padStart(2,"0"); }
 
 // Bugungi kunning statistikasini yig'ish
-async function buildTodayStats() {
+async function buildTodayStats(branchId = DEFAULT_BRANCH) {
+  const branch = normBranch(branchId);
   // Toshkent vaqti UTC+5
   const now   = new Date();
   const lMs   = now.getTime() + 5*3600_000;
@@ -100,10 +101,10 @@ async function buildTodayStats() {
   const dayStart = new Date(`${y}-${m}-${d}T00:00:00.000+05:00`);
   const dayEnd   = new Date(`${y}-${m}-${d}T23:59:59.999+05:00`);
 
-  const [sales, expenses, counter] = await Promise.all([
-    Sale.find({ createdAt:{ $gte:dayStart, $lte:dayEnd }}).lean(),
-    Expense.find({ createdAt:{ $gte:dayStart, $lte:dayEnd }}).lean(),
-    Counter.findOne({ key:"balance" }).lean(),
+  const [sales, expenses, balanceVal] = await Promise.all([
+    Sale.find(withBranch({ createdAt:{ $gte:dayStart, $lte:dayEnd }}, branch)).lean(),
+    Expense.find(withBranch({ createdAt:{ $gte:dayStart, $lte:dayEnd }}, branch)).lean(),
+    balanceFor(branch),
   ]);
 
   let totalIncome=0, tortCount=0, tortIncome=0, ichimlikIncome=0, otherIncome=0;
@@ -161,7 +162,7 @@ async function buildTodayStats() {
   });
 
   const totalExpense = expenses.reduce((s,x)=>s+Number(x.amount||0),0);
-  const balance      = Number(counter?.value||0);
+  const balance      = Number(balanceVal||0);
   const profit       = totalIncome - totalExpense;
 
   const topSellers = Object.entries(sellerMap)
@@ -169,6 +170,7 @@ async function buildTodayStats() {
     .slice(0,2);
 
   return {
+    branchId: branch,
     dateStr:`${d}.${m}.${y}`,
     saleCount: sales.length,
     totalIncome, tortCount, tortIncome, ichimlikIncome, otherIncome,
@@ -352,16 +354,26 @@ function randomMinutes(fromH, toH) {
 let _t1=null, _t2=null;
 
 function scheduleStatsNotifier(bot) {
-  if (!GROUP_CHAT_ID) {
+  if (!branchIds().some(b => groupFor(b))) {
     console.warn("[statsNotifier] GROUP_CHAT_ID topilmadi — o'tkazildi");
     return;
   }
 
+  // Har filial uchun alohida statistika (tepada filial nomi bilan)
   async function send(timeLabel) {
+    for (const branch of branchIds()) {
+      await sendForBranch(branch, timeLabel);
+    }
+  }
+
+  async function sendForBranch(branch, timeLabel) {
+    const GROUP_CHAT_ID = groupFor(branch);
+    if (!GROUP_CHAT_ID) return;
     try {
-      const stats  = await buildTodayStats();
+      const stats  = await buildTodayStats(branch);
       const hint   = getNextHolidayHint();
-      const text   = buildMessage(stats, timeLabel);
+      const head   = `🏪 <b>${branchName(branch)}</b>\n`;
+      const text   = head + buildMessage(stats, timeLabel);
       const waUrl  = `${WEBAPP_URL||"https://cake.medme.uz"}/analytics`;
 
       const statsBtn = {
@@ -380,7 +392,7 @@ function scheduleStatsNotifier(bot) {
 
       // 2️⃣ Zubaydaga alohida xabar (agar BAKER_TG_ID sozlangan bo'lsa)
       if (BAKER_TG_ID) {
-        const bakerText = buildBakerMessage(stats, hint);
+        const bakerText = head + buildBakerMessage(stats, hint);
         await bot.sendMessage(BAKER_TG_ID, bakerText, {
           parse_mode: "HTML",
           reply_markup: {

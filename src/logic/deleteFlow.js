@@ -8,6 +8,13 @@ const { escapeHtml } = require("./ui");
 const { formatMoney } = require("../utils/money");
 const { sendToGroup } = require("../services/notify");
 const { redis } = require("../services/auth");
+const { currentBranch, sameBranch, normBranch } = require("../services/branches");
+const { applySupplierDebtDelta } = require("../services/branchData");
+const { ADMIN_TG_ID } = require("../config");
+
+const isAdminId = (id) => !!(ADMIN_TG_ID && Number(id) === Number(ADMIN_TG_ID));
+// Boshqa filial yozuvini faqat admin o'chira oladi
+const canTouch = (doc, userId) => isAdminId(userId) || sameBranch(doc?.branchId, currentBranch());
 
 async function startDeleteFlow(bot, chatId, userId, type, docId, orderNo) {
     await redis.set(
@@ -61,14 +68,20 @@ async function handleDeleteMessage(bot, chatId, userId, text) {
                 return { handled: true };
             }
 
-            // ✅ 1) balansni qaytaramiz (chiqim o‘chdi => pul qaytdi)
-            await addBalance(Number(exp.amount || 0), null);
+            if (!canTouch(exp, userId)) {
+                await bot.sendMessage(chatId, "⛔ Bu chiqim boshqa filialga tegishli.");
+                return { handled: true };
+            }
+            const expBranch = normBranch(exp.branchId);
+
+            // ✅ 1) balansni qaytaramiz (chiqim o‘chdi => pul o'sha filialga qaytdi)
+            await addBalance(Number(exp.amount || 0), null, expBranch);
 
             // ✅ 2) agar bu firma to‘lovi bo‘lsa => supplier.debt qaytadi
             if (exp.categoryKey === "supplier" && exp.supplierId) {
                 const sup = await Supplier.findById(exp.supplierId);
                 if (sup) {
-                    sup.debt = Number(sup.debt || 0) + Number(exp.amount || 0);
+                    applySupplierDebtDelta(sup, expBranch, Number(exp.amount || 0));
                     await sup.save();
                 }
             }
@@ -87,7 +100,7 @@ async function handleDeleteMessage(bot, chatId, userId, text) {
                 `🧾 Nima: <b>${escapeHtml(exp.categoryKey || "other")} | ${escapeHtml(exp.title || "-")}</b>\n` +
                 `💸 Summa: <b>-${formatMoney(exp.amount)}</b> so'm\n` +
                 `📝 Sabab: <b>${escapeHtml(reason)}</b>`,
-                { parse_mode: "HTML" }
+                { parse_mode: "HTML", branchId: expBranch }
             );
 
             return { handled: true };
@@ -100,13 +113,19 @@ async function handleDeleteMessage(bot, chatId, userId, text) {
                 return { handled: true };
             }
 
+            if (!canTouch(sale, userId)) {
+                await bot.sendMessage(chatId, "⛔ Bu sotuv boshqa filialga tegishli.");
+                return { handled: true };
+            }
+            const saleBranch = normBranch(sale.branchId);
+
             const debt = await Debt.findOne({ saleId: sale._id });
             if (debt && (debt.payments || []).length > 0) {
                 await bot.sendMessage(chatId, "❌ Bu sotuv bo‘yicha qarz to‘lovi bor. O‘chirish mumkin emas.");
                 return { handled: true };
             }
 
-            await addBalance(-Number(sale.paidTotal || 0), null);
+            await addBalance(-Number(sale.paidTotal || 0), null, saleBranch);
             if (debt) await Debt.deleteOne({ _id: debt._id });
             await Sale.deleteOne({ _id: sale._id });
 
@@ -119,7 +138,7 @@ async function handleDeleteMessage(bot, chatId, userId, text) {
                 `👤 Sotuvchi: <b>${escapeHtml(sale.seller?.tgName || "-")}</b>\n` +
                 `💰 Tushgan: <b>${formatMoney(sale.paidTotal)}</b> so'm\n` +
                 `📝 Sabab: <b>${escapeHtml(reason)}</b>`,
-                { parse_mode: "HTML" }
+                { parse_mode: "HTML", branchId: saleBranch }
             );
 
             return { handled: true };

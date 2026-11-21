@@ -8,8 +8,6 @@ const Referral = require("../models/Referral");
 const Sale = require("../models/Sale");
 const Expense = require("../models/Expense");
 const Debt = require("../models/Debt");
-const Supplier = require("../models/Supplier");
-const Counter = require("../models/Counter");
 
 const ReceiptToken = require("../models/ReceiptToken");
 const Customer = require("../models/Customer");
@@ -20,6 +18,11 @@ const { saveSaleWithTx } = require("../logic/storage");
 const { saveExpenseWithTx } = require("../logic/storage");
 const Worker = require("../models/Worker");
 const { ADMIN_TG_ID } = require("../config");
+const {
+    getBranch, getBranches, normBranch, withBranch, ALL,
+} = require("../services/branches");
+const { getUserBranch } = require("../services/auth");
+const { balanceFor, supplierDebtSum } = require("../services/branchData");
 
 // ✅ from/to parse helper (ISO yoki date string)
 // Agar from/to berilmasa => bugun (Toshkent TZ)
@@ -42,11 +45,43 @@ function getRangeFromQuery(req) {
     return { from, to };
 }
 
+const isAdminReq = (req) => !!(ADMIN_TG_ID && Number(req?.tgUser?.id) === Number(ADMIN_TG_ID));
+
+// Qaysi filial ma'lumoti ko'rsatiladi:
+//   admin  → ?branch=all|sang|toda (default: all)
+//   boshqa → faqat o'z filiali (so'ralgan qiymat e'tiborga olinmaydi)
+async function resolveBranch(req) {
+    if (isAdminReq(req)) {
+        const q = String(req.query.branch || "").toLowerCase();
+        if (q === ALL || !q) return ALL;
+        return normBranch(q);
+    }
+    return getUserBranch(Number(req?.tgUser?.id));
+}
+
 function webappRoutes({ botToken, customerBotToken, io }) {
     const r = express.Router();
 
     // admin webapp uchun
     r.use("/dashboard", verifyTgWebApp(BOT_TOKEN), allowWebAppUsers);
+
+    // =========================
+    // 🏪 ME — foydalanuvchi filiali va ruxsatlari
+    // GET /api/webapp/dashboard/me
+    // =========================
+    r.get("/dashboard/me", async (req, res) => {
+        try {
+            const admin = isAdminReq(req);
+            const own = await getUserBranch(Number(req.tgUser.id));
+            const list = Object.values(getBranches()).map(({ id, name, short }) => ({ id, name, short }));
+            return res.json({
+                ok: true,
+                data: { isAdmin: admin, branch: own, branches: list, selected: await resolveBranch(req) },
+            });
+        } catch (e) {
+            return res.status(500).json({ ok: false, error: e.message });
+        }
+    });
 
     // =========================
     // 📊 SUMMARY (cards)
@@ -55,10 +90,11 @@ function webappRoutes({ botToken, customerBotToken, io }) {
     r.get("/dashboard/summary", async (req, res) => {
         try {
             const { from, to } = getRangeFromQuery(req);
-            const dateMatch = { createdAt: { $gte: from, $lte: to } };
+            const branch = await resolveBranch(req);
+            const dateMatch = withBranch({ createdAt: { $gte: from, $lte: to } }, branch);
 
-            // ✅ 5 ta so'rovni parallel yuboramiz — ketma-ket emas
-            const [saleAgg, expenseAgg, customerDebtAgg, supplierDebtAgg, balanceDoc] = await Promise.all([
+            // ✅ so'rovlarni parallel yuboramiz — ketma-ket emas
+            const [saleAgg, expenseAgg, customerDebtAgg, supplierDebtTotal, balanceTotal] = await Promise.all([
                 Sale.aggregate([
                     { $match: dateMatch },
                     { $group: { _id: null, soldTotal: { $sum: "$total" }, salePaid: { $sum: "$paidTotal" } } },
@@ -68,13 +104,11 @@ function webappRoutes({ botToken, customerBotToken, io }) {
                     { $group: { _id: null, sum: { $sum: "$amount" } } },
                 ]),
                 Debt.aggregate([
-                    { $match: { isClosed: false, kind: "customer" } },
+                    { $match: withBranch({ isClosed: false, kind: "customer" }, branch) },
                     { $group: { _id: null, sum: { $sum: "$remainingDebt" } } },
                 ]),
-                Supplier.aggregate([
-                    { $group: { _id: null, sum: { $sum: "$debt" } } },
-                ]),
-                Counter.findOne({ key: "balance" }).lean(),
+                supplierDebtSum(branch),
+                balanceFor(branch),
             ]);
 
             return res.json({
@@ -85,9 +119,10 @@ function webappRoutes({ botToken, customerBotToken, io }) {
                         salePaid: saleAgg[0]?.salePaid || 0,
                         expenseSum: expenseAgg[0]?.sum || 0,
                         customerDebt: customerDebtAgg[0]?.sum || 0,
-                        supplierDebt: supplierDebtAgg[0]?.sum || 0,
-                        balance: balanceDoc?.value || 0,
+                        supplierDebt: supplierDebtTotal || 0,
+                        balance: balanceTotal || 0,
                     },
+                    branch,
                 },
             });
         } catch (e) {
@@ -102,7 +137,8 @@ function webappRoutes({ botToken, customerBotToken, io }) {
     r.get("/dashboard/activity", async (req, res) => {
         try {
             const { from, to } = getRangeFromQuery(req);
-            const dateMatch = { createdAt: { $gte: from, $lte: to } };
+            const branch = await resolveBranch(req);
+            const dateMatch = withBranch({ createdAt: { $gte: from, $lte: to } }, branch);
 
             const sales = await Sale.find(dateMatch).sort({ createdAt: -1 }).limit(30).lean();
             const expenses = await Expense.find(dateMatch).sort({ createdAt: -1 }).limit(30).lean();
@@ -120,6 +156,7 @@ function webappRoutes({ botToken, customerBotToken, io }) {
     r.get("/dashboard/chart", async (req, res) => {
         try {
             const zone = TZ || "Asia/Tashkent";
+            const branch = await resolveBranch(req);
 
             const todayStart = moment().tz(zone).startOf("day").toDate();
             const todayEnd = moment().tz(zone).endOf("day").toDate();
@@ -129,7 +166,7 @@ function webappRoutes({ botToken, customerBotToken, io }) {
 
             const agg = async (from, to) => {
                 const rows = await Sale.aggregate([
-                    { $match: { createdAt: { $gte: from, $lte: to } } },
+                    { $match: withBranch({ createdAt: { $gte: from, $lte: to } }, branch) },
                     { $group: { _id: { $hour: "$createdAt" }, sum: { $sum: "$paidTotal" } } },
                     { $sort: { _id: 1 } },
                 ]);
@@ -177,6 +214,7 @@ function webappRoutes({ botToken, customerBotToken, io }) {
                 ok: true,
                 data: {
                     sale,
+                    branch: (({ id, name, address, phone }) => ({ id, name, address, phone }))(getBranch(sale.branchId)),
                     scansCount: doc.scansCount || 0,
                     minPaid: MIN_QR_PAID,
                     deepLink,
@@ -279,7 +317,8 @@ function webappRoutes({ botToken, customerBotToken, io }) {
                 seller,
                 items,
                 phone: null,
-                noteText: offlineNote || ""
+                noteText: offlineNote || "",
+                branchId: await getUserBranch(Number(req.tgUser?.id)),
             });
 
             // Socket event
@@ -322,7 +361,8 @@ function webappRoutes({ botToken, customerBotToken, io }) {
                 title: title || categoryKey || "Chiqim",
                 amount: Number(amount),
                 categoryKey: categoryKey || "other",
-                description: offlineNote || ""
+                description: offlineNote || "",
+                branchId: await getUserBranch(Number(req.tgUser?.id)),
             });
 
             if (global.io) global.io.emit("refresh");
@@ -349,6 +389,7 @@ function webappRoutes({ botToken, customerBotToken, io }) {
         }
 
         const results = [];
+        const syncBranch = await getUserBranch(Number(req.tgUser?.id));
         for (const item of items.slice(0, 50)) { // max 50 ta
             try {
                 let result;
@@ -362,7 +403,8 @@ function webappRoutes({ botToken, customerBotToken, io }) {
                         seller,
                         items: item.payload.items || [],
                         phone: item.payload.phone || null,
-                        noteText: item.payload.offlineNote || ""
+                        noteText: item.payload.offlineNote || "",
+                        branchId: syncBranch,
                     });
                     result = { ok: true, offlineId: item.offlineId, orderNo: r.sale.orderNo };
                 } else if (item.type === "expense") {
@@ -371,7 +413,8 @@ function webappRoutes({ botToken, customerBotToken, io }) {
                         title: item.payload.title || "Chiqim",
                         amount: Number(item.payload.amount || 0),
                         categoryKey: item.payload.categoryKey || "other",
-                        description: item.payload.offlineNote || ""
+                        description: item.payload.offlineNote || "",
+                        branchId: syncBranch,
                     });
                     result = { ok: true, offlineId: item.offlineId, orderNo: e.orderNo };
                 } else {

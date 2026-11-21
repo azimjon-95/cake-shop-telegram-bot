@@ -1,25 +1,9 @@
 const Debt = require("../models/Debt");
-const Counter = require("../models/Counter");
 const { mongoose } = require("../db");
+const { addBalance } = require("../logic/storage");
+const { currentBranch, sameBranch, normBranch } = require("./branches");
 
-async function ensureBalance(session) {
-    const doc = await Counter.findOne({ key: "balance" }).session(session || null);
-    if (doc) return doc;
-
-    const created = await Counter.create(
-        [{ key: "balance", value: 0 }],
-        session ? { session } : undefined
-    );
-
-    return created[0];
-}
-
-async function addBalance(amount, session) {
-    const bal = await ensureBalance(session);
-    bal.value += Number(amount || 0);
-    await bal.save({ session });
-    return bal.value;
-}
+// Balans: qarz qaysi filialniki bo'lsa — o'sha filial balansiga tushadi (atomik $inc)
 
 async function payDebt({ debtId, amount, payer }, { useTx = true } = {}) {
     const session = useTx ? await mongoose.startSession() : null;
@@ -29,6 +13,11 @@ async function payDebt({ debtId, amount, payer }, { useTx = true } = {}) {
 
         if (!debt) throw new Error("Qarz topilmadi");
         if (debt.isClosed) throw new Error("Bu qarz yopilgan");
+
+        // Boshqa filial qarzini to'lab bo'lmaydi (balanslar aralashmasin)
+        if (!sameBranch(debt.branchId, currentBranch())) {
+            throw new Error("Bu qarz boshqa filialga tegishli");
+        }
 
         const pay = Math.max(0, Number(amount || 0));
         if (!pay) throw new Error("To'lov summasi noto'g'ri");
@@ -63,7 +52,7 @@ async function payDebt({ debtId, amount, payer }, { useTx = true } = {}) {
         }
 
         await debt.save({ session });
-        await addBalance(actualPay, session);
+        await addBalance(actualPay, session, normBranch(debt.branchId));
 
         return { debt, actualPay };
     };

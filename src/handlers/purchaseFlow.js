@@ -10,6 +10,8 @@ const { getUserName } = require("../logic/ui");
 const { nextOrderNo } = require("../services/orderNo");
 const { sendToGroup } = require("../services/notify");
 const { addBalance, getBalance } = require("../logic/storage");
+const { currentBranch } = require("../services/branches");
+const { applySupplierDebtDelta } = require("../services/branchData");
 
 const KEY = (userId) => `pur_state:${userId}`;
 
@@ -259,29 +261,10 @@ async function onPurchaseMessage(bot, msg) {
 
         const createdBy = st.createdBy || { tgId: userId, tgName: getUserName(msg) };
         const debtAdd = Math.max(0, totalCost - paid);
+        const branch = currentBranch();
 
-        // ✅ Purchase create (schema: totalCost, desc, createdBy)
-        const purchase = await Purchase.create({
-            orderNo: await nextOrderNo(null),
-            supplierId: supplier._id,
-            totalCost,
-            description: st.desc || "",
-            createdBy
-        });
-
-        // ✅ Agar to‘lov bo‘lsa — Expense yozamiz va Counter minus
+        // ✅ Balans tekshiruvi — AVVAL (shu filialning o'z balansi). Yetmasa hech narsa yozilmaydi.
         if (paid > 0) {
-            await Expense.create({
-                orderNo: await nextOrderNo(null),
-                spender: createdBy,
-                title: `Firma to‘lovi: ${supplier.name}`,
-                amount: paid,
-                categoryKey: "supplier",
-                supplierId: supplier._id,
-                description: st.desc || ""
-            });
-
-            // ✅ Balans tekshiruvi
             const balance = await getBalance();
             if (balance < paid) {
                 await redis.del(KEY(userId));
@@ -292,12 +275,36 @@ async function onPurchaseMessage(bot, msg) {
                 );
                 return true;
             }
-            try { await addBalance(-paid); } catch { }
         }
 
-        // ✅ Qarzni Supplier.debt ga yig‘amiz
+        // ✅ Purchase create (schema: totalCost, desc, createdBy)
+        const purchase = await Purchase.create({
+            orderNo: await nextOrderNo(null),
+            branchId: branch,
+            supplierId: supplier._id,
+            totalCost,
+            description: st.desc || "",
+            createdBy
+        });
+
+        // ✅ Agar to‘lov bo‘lsa — Expense yozamiz va shu filial balansidan minus
+        if (paid > 0) {
+            await Expense.create({
+                orderNo: await nextOrderNo(null),
+                branchId: branch,
+                spender: createdBy,
+                title: `Firma to‘lovi: ${supplier.name}`,
+                amount: paid,
+                categoryKey: "supplier",
+                supplierId: supplier._id,
+                description: st.desc || ""
+            });
+            await addBalance(-paid, null, branch);
+        }
+
+        // ✅ Qarzni Supplier.debt ga (va shu filial ulushiga) yig‘amiz
         if (debtAdd > 0) {
-            supplier.debt = Number(supplier.debt || 0) + debtAdd;
+            applySupplierDebtDelta(supplier, branch, debtAdd);
             await supplier.save();
         }
 

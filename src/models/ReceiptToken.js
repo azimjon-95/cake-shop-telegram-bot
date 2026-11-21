@@ -5,6 +5,7 @@ const ReceiptTokenSchema = new mongoose.Schema({
     token:           { type: String, unique: true, index: true, required: true },
     saleId:          { type: mongoose.Schema.Types.ObjectId, ref: "Sale", required: true, index: true },
     orderNo:         { type: String, index: true },
+    branchId:        { type: String, default: "sang" },
     minPaid:         { type: Number, default: 70000 },
     saleTotal:       { type: Number, default: 0 },
     salePaid:        { type: Number, default: 0 },

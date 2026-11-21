@@ -8,6 +8,8 @@ const PersonSchema = new mongoose.Schema({
 
 const ExpenseSchema = new mongoose.Schema({
     orderNo: { type: String, required: true },
+    // Filial: yo'q/null bo'lsa — "sang" (eski ma'lumotlar)
+    branchId: { type: String, default: "sang" },
     spender: { type: PersonSchema, required: true },
 
     // eski title/amount
@@ -22,5 +24,6 @@ const ExpenseSchema = new mongoose.Schema({
 
 // ✅ createdAt indeksi — dashboard aggregate va filter uchun
 ExpenseSchema.index({ createdAt: 1 });
+ExpenseSchema.index({ branchId: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Expense", ExpenseSchema);

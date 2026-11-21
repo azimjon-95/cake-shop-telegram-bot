@@ -15,7 +15,7 @@ async function onStart(bot, msg) {
     }
 
     await setMode(userId, "await_password");
-    return bot.sendMessage(chatId, "🔑 Parolni kiriting:");
+    return bot.sendMessage(chatId, "🔑 Do'kon PIN-kodini kiriting:");
 }
 
 module.exports = { onStart };

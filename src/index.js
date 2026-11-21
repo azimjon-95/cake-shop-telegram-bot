@@ -12,6 +12,7 @@ const { TZ, BOT_TOKEN, CUSTOMER_BOT_TOKEN, REDIS_URL, PORT, WEBAPP_URL } = requi
 
 const { webappRoutes } = require("./routes/webapp");
 const { createRealtime } = require("./services/realtime");
+const { validateBranchConfig } = require("./services/branches");
 const { createDashboardRealtime } = require("./services/dashboardRealtime");
 const { createReceiptRealtime } = require("./services/receiptRealtime");
 const dns = require("dns");
@@ -41,6 +42,7 @@ async function safe(name, fn) {
     try {
         // ✅ DB — kritik
         await connectDb();
+        validateBranchConfig(); // PIN_TODA / PIN_SANG sozlamalari haqida ogohlantirish
 
         const app = express();
         app.use(express.json({ limit: "1mb" }));

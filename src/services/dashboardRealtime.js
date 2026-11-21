@@ -3,18 +3,25 @@ const moment = require("moment-timezone");
 const Sale = require("../models/Sale");
 const Expense = require("../models/Expense");
 const Debt = require("../models/Debt");
-const Supplier = require("../models/Supplier");
-const Counter = require("../models/Counter");
+const { ALL, normBranch, withBranch } = require("./branches");
+const { balanceFor, supplierDebtSum } = require("./branchData");
 
-function roomKey(fromISO, toISO) {
-    return `dash:${fromISO}:${toISO}`;
+// branch: "all" | "sang" | "toda"   (default: all — eski xatti-harakat)
+function cleanBranch(b) {
+    const v = String(b || "").toLowerCase();
+    return !v || v === ALL ? ALL : normBranch(v);
 }
 
-async function buildDashboardData(fromISO, toISO) {
+function roomKey(fromISO, toISO, branch = ALL) {
+    return `dash:${cleanBranch(branch)}:${fromISO}:${toISO}`;
+}
+
+async function buildDashboardData(fromISO, toISO, branch = ALL) {
     const from = new Date(fromISO);
     const to = new Date(toISO);
+    branch = cleanBranch(branch);
 
-    const dateMatch = { createdAt: { $gte: from, $lte: to } };
+    const dateMatch = withBranch({ createdAt: { $gte: from, $lte: to } }, branch);
 
     const saleAgg = await Sale.aggregate([
         { $match: dateMatch },
@@ -33,15 +40,12 @@ async function buildDashboardData(fromISO, toISO) {
     ]);
 
     const customerDebtAgg = await Debt.aggregate([
-        { $match: { isClosed: false, kind: "customer" } },
+        { $match: withBranch({ isClosed: false, kind: "customer" }, branch) },
         { $group: { _id: null, sum: { $sum: "$remainingDebt" } } },
     ]);
 
-    const supplierDebtAgg = await Supplier.aggregate([
-        { $group: { _id: null, sum: { $sum: "$debt" } } },
-    ]);
-
-    const balanceDoc = await Counter.findOne({ key: "balance" }).lean();
+    const supplierDebtTotal = await supplierDebtSum(branch);
+    const balanceTotal = await balanceFor(branch);
 
     const sales = await Sale.find(dateMatch).sort({ createdAt: -1 }).limit(30).lean();
     const expenses = await Expense.find(dateMatch).sort({ createdAt: -1 }).limit(30).lean();
@@ -49,7 +53,7 @@ async function buildDashboardData(fromISO, toISO) {
     // chart (hourly)
     const aggHourly = async (fromD, toD) => {
         const rows = await Sale.aggregate([
-            { $match: { createdAt: { $gte: fromD, $lte: toD } } },
+            { $match: withBranch({ createdAt: { $gte: fromD, $lte: toD } }, branch) },
             { $group: { _id: { $hour: "$createdAt" }, sum: { $sum: "$paidTotal" } } },
             { $sort: { _id: 1 } },
         ]);
@@ -77,12 +81,12 @@ async function buildDashboardData(fromISO, toISO) {
             salePaid: saleAgg[0]?.salePaid || 0,
             expenseSum: expenseAgg[0]?.sum || 0,
             customerDebt: customerDebtAgg[0]?.sum || 0,
-            supplierDebt: supplierDebtAgg[0]?.sum || 0,
-            balance: balanceDoc?.value || 0,
+            supplierDebt: supplierDebtTotal || 0,
+            balance: balanceTotal || 0,
         },
         activity: { sales, expenses },
         chart: { today, yesterday },
-        meta: { fromISO, toISO, ts: Date.now() },
+        meta: { fromISO, toISO, branch, ts: Date.now() },
     };
 }
 
@@ -90,13 +94,13 @@ async function buildDashboardData(fromISO, toISO) {
 const _cache = new Map(); // key -> { data, ts }
 const CACHE_TTL = 8000;   // 8 sekund
 
-async function buildDashboardDataCached(fromISO, toISO) {
-    const cacheKey = fromISO + toISO;
+async function buildDashboardDataCached(fromISO, toISO, branch = ALL) {
+    const cacheKey = `${cleanBranch(branch)}|${fromISO}|${toISO}`;
     const cached = _cache.get(cacheKey);
     if (cached && (Date.now() - cached.ts) < CACHE_TTL) {
         return cached.data;
     }
-    const data = await buildDashboardData(fromISO, toISO);
+    const data = await buildDashboardData(fromISO, toISO, branch);
     _cache.set(cacheKey, { data, ts: Date.now() });
     // 30 dan ortiq unique range bo'lsa eski cachelarni tozala
     if (_cache.size > 30) {
@@ -115,7 +119,7 @@ function createDashboardRealtime({ io, intervalMs = 10000 }) {
         if (!st) return;
 
         try {
-            const payload = await buildDashboardDataCached(st.fromISO, st.toISO);
+            const payload = await buildDashboardDataCached(st.fromISO, st.toISO, st.branch);
             const hash = JSON.stringify(payload); // kichik loyihalarda yetadi
 
             if (hash !== st.lastHash) {
@@ -128,8 +132,8 @@ function createDashboardRealtime({ io, intervalMs = 10000 }) {
         }
     }
 
-    function ensureRoom(fromISO, toISO) {
-        const key = roomKey(fromISO, toISO);
+    function ensureRoom(fromISO, toISO, branch) {
+        const key = roomKey(fromISO, toISO, branch);
         if (rooms.has(key)) return key;
 
         const timer = setInterval(() => tickRoom(key), intervalMs);
@@ -137,6 +141,7 @@ function createDashboardRealtime({ io, intervalMs = 10000 }) {
             key,
             fromISO,
             toISO,
+            branch: cleanBranch(branch),
             timer,
             lastHash: "",
             lastPayload: null,
@@ -154,7 +159,7 @@ function createDashboardRealtime({ io, intervalMs = 10000 }) {
 
     function attachSocketHandlers() {
         io.on("connection", (socket) => {
-            socket.on("dashboard:subscribe", async ({ fromISO, toISO }) => {
+            socket.on("dashboard:subscribe", async ({ fromISO, toISO, branch }) => {
                 if (!fromISO || !toISO) {
                     socket.emit("dashboard:error", { message: "fromISO/toISO required" });
                     return;
@@ -171,7 +176,7 @@ function createDashboardRealtime({ io, intervalMs = 10000 }) {
                 }
 
                 // new room
-                const key = ensureRoom(fromISO, toISO);
+                const key = ensureRoom(fromISO, toISO, branch);
                 socket.data.dashRoom = key;
                 socket.join(key);
 
@@ -180,7 +185,7 @@ function createDashboardRealtime({ io, intervalMs = 10000 }) {
 
                 // darhol initial yuboramiz
                 try {
-                    const payload = await buildDashboardDataCached(fromISO, toISO);
+                    const payload = await buildDashboardDataCached(fromISO, toISO, branch);
                     st.lastHash = JSON.stringify(payload);
                     st.lastPayload = payload;
                     socket.emit("dashboard:update", payload);

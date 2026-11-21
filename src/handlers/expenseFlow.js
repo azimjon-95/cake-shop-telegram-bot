@@ -3,14 +3,15 @@ const dayjs = require("dayjs");
 
 const Expense = require("../models/Expense");
 const Supplier = require("../models/Supplier");
-const Counter = require("../models/Counter");
 const { redis } = require("../services/auth");
 
 const { expenseCategoryKeyboard, supplierListKeyboard, mainMenuKeyboard } = require("../keyboards");
 const { formatMoney } = require("../utils/money");
 const { getUserName, escapeHtml } = require("../logic/ui");
 const { nextOrderNo } = require("../services/orderNo");
-const { addBalance } = require("../logic/storage");
+const { addBalance, getBalance } = require("../logic/storage");
+const { currentBranch } = require("../services/branches");
+const { supplierDebtOf, applySupplierDebtDelta } = require("../services/branchData");
 const { sendToGroup } = require("../services/notify");
 
 const KEY = (userId) => `exp_state:${userId}`;
@@ -33,11 +34,6 @@ const CAT_LABELS = {
 
 function getCatLabel(key) {
     return CAT_LABELS[key] || key || "Boshqa";
-}
-
-async function getBalance() {
-    const doc = await Counter.findOne({ key: "balance" }).lean();
-    return Number(doc?.value || 0);
 }
 
 function expenseGroupText(exp) {
@@ -75,8 +71,10 @@ async function saveExpenseSafe({ spender, title, amount, categoryKey, descriptio
         };
     }
 
+    const branch = currentBranch();
     const expData = {
         orderNo:     await nextOrderNo(null),
+        branchId:    branch,
         spender,
         title:       title || getCatLabel(categoryKey || "other"),
         amount,
@@ -86,7 +84,7 @@ async function saveExpenseSafe({ spender, title, amount, categoryKey, descriptio
     if (supplierId) expData.supplierId = supplierId;
 
     const exp = await Expense.create(expData);
-    await addBalance(-amount, null);
+    await addBalance(-amount, null, branch);
 
     return { ok: true, exp };
 }
@@ -155,7 +153,7 @@ async function onExpenseCallback(bot, q, seller) {
             return true;
         }
 
-        const remain = Number(sup.debt || 0);
+        const remain = supplierDebtOf(sup, currentBranch());
         if (remain <= 0) {
             await bot.sendMessage(chatId, "✅ Bu firmada qarz yo'q.");
             return true;
@@ -314,7 +312,7 @@ async function onExpenseMessage(bot, msg) {
             return true;
         }
 
-        const remain = Number(sup.debt || 0);
+        const remain = supplierDebtOf(sup, currentBranch());
         if (remain <= 0) {
             await redis.del(KEY(userId));
             await bot.sendMessage(chatId, "✅ Bu firmada qarz yo'q.");
@@ -338,15 +336,16 @@ async function onExpenseMessage(bot, msg) {
             return true;
         }
 
-        sup.debt = Math.max(0, remain - pay);
+        applySupplierDebtDelta(sup, currentBranch(), -pay);
         await sup.save();
+        const supLeft = supplierDebtOf(sup, currentBranch());
 
         await sendToGroup(bot, expenseGroupText(result.exp));
         await redis.del(KEY(userId));
         await bot.sendMessage(
             chatId,
             `✅ To'landi: <b>${formatMoney(pay)}</b> so'm\n` +
-            `💳 Firmada qolgan qarz: <b>${formatMoney(sup.debt)}</b> so'm`,
+            `💳 Firmada qolgan qarz: <b>${formatMoney(supLeft)}</b> so'm`,
             {
                 parse_mode: "HTML",
                 reply_markup: {

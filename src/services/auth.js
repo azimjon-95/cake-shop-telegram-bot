@@ -3,8 +3,11 @@
 // Barcha redis.get/set/del chaqiruvlari avtomatik fallback ga o'tadi
 
 const Redis = require("ioredis");
-const { REDIS_URL, AUTH_TTL_SECONDS, BOT_PASSWORD } = require("../config");
+const { REDIS_URL, AUTH_TTL_SECONDS } = require("../config");
 const Worker = require("../models/Worker");
+const {
+    DEFAULT_BRANCH, normBranch, branchByPin, pinBlockedMs, pinFailed, pinOk, setCurrentBranch,
+} = require("./branches");
 
 // ═══════════════════════════════════════════════════════
 // 1. RAM STORE — Redis o'lsa bu ishlaydi
@@ -150,10 +153,60 @@ async function getMode(userId) {
     return (await safeGet(modeKey(userId))) || null;
 }
 
-async function checkPassword(userId, text) {
+// ── FILIAL: foydalanuvchi qaysi filialda ishlayapti ───────
+function branchKey(userId) { return `branch:${userId}`; }
+
+async function setUserBranch(userId, branchId) {
+    const b = normBranch(branchId);
+    await safeSet(branchKey(userId), b, "EX", AUTH_TTL_SECONDS);
+    setCurrentBranch(b);
+    // Worker bo'lsa — keyingi safar PIN so'ramasdan kirishi uchun yozib qo'yamiz
+    try { await Worker.updateOne({ tgId: userId }, { $set: { branchId: b } }); } catch { }
+    return b;
+}
+
+// Eslatma: filial belgilanmagan eski sessiyalar "sang" hisoblanadi (hozirgi ish buzilmaydi)
+async function getUserBranch(userId) {
+    if (!userId) return DEFAULT_BRANCH;
+    const cached = await safeGet(branchKey(userId));
+    if (cached) return normBranch(cached);
+    try {
+        const w = await Worker.findOne({ tgId: userId }).select("branchId").lean();
+        if (w?.branchId) {
+            await safeSet(branchKey(userId), normBranch(w.branchId), "EX", 600);
+            return normBranch(w.branchId);
+        }
+    } catch { }
+    // Topilmadi — qisqa muddat keshlaymiz (har xabarda DB ga bormaslik uchun)
+    await safeSet(branchKey(userId), DEFAULT_BRANCH, "EX", 60);
+    return DEFAULT_BRANCH;
+}
+
+// ── KIRISH ────────────────────────────────────────────────
+// 1) PIN: do'kon PIN-kodi → o'sha filialga kiradi
+// 2) Worker (faol) va filiali oldin PIN bilan belgilangan bo'lsa — PIN so'ramasdan
+async function loginByPin(userId, text) {
+    const wait = pinBlockedMs(userId);
+    if (wait > 0) return { ok: false, blockedMs: wait };
+
+    const branch = branchByPin(text);
+    if (!branch) {
+        const f = pinFailed(userId);
+        return { ok: false, blockedMs: f.until > Date.now() ? f.until - Date.now() : 0 };
+    }
+
+    pinOk(userId);
+    await setAuthed(userId);
+    await setUserBranch(userId, branch);
+    return { ok: true, branch };
+}
+
+async function autoLogin(userId) {
     const worker = await Worker.findOne({ tgId: userId, isActive: true }).lean();
-    if (worker) return true;
-    return String(text || "").trim() === String(BOT_PASSWORD || "").trim();
+    if (!worker || !worker.branchId) return { ok: false };
+    await setAuthed(userId);
+    await setUserBranch(userId, worker.branchId);
+    return { ok: true, branch: normBranch(worker.branchId) };
 }
 
 // ═══════════════════════════════════════════════════════
@@ -168,6 +221,9 @@ module.exports = {
     clearAuthed,
     setMode,
     getMode,
-    checkPassword,
+    setUserBranch,
+    getUserBranch,
+    loginByPin,
+    autoLogin,
     isRedisAlive,
 };

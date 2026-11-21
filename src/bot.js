@@ -9,6 +9,8 @@ const { BOT_TOKEN, GROUP_CHAT_ID, WEBAPP_URL } = require("./config");
 const { onCallback }   = require("./handlers/onCallback");
 const { onMessage }    = require("./handlers/onMessage");
 const { saveSeenUser } = require("./logic/saveSeenUser");
+const { runWithBranch } = require("./services/branches");
+const { getUserBranch } = require("./services/auth");
 const { webAppButtons } = require("./keyboards");
 
 const { scheduleDailyAt2330 }    = require("./services/backupScheduler");
@@ -137,8 +139,12 @@ function createSafePollingBot(token, name) {
 
 async function safeHandleMessage(bot, msg) {
     try {
-        await saveSeenUser(msg);
-        await onMessage(bot, msg);
+        // Foydalanuvchining filiali — butun handler zanjiri uchun kontekstga qo'yiladi
+        const branchId = await getUserBranch(msg.from?.id);
+        await runWithBranch(branchId, async () => {
+            await saveSeenUser(msg);
+            await onMessage(bot, msg);
+        });
     } catch (e) {
         console.error("[onMessage error]", e?.message || e);
         try { await bot.sendMessage(msg.chat.id, "⚠️ Ichki xatolik. Qayta urinib ko'ring."); } catch {}
@@ -147,7 +153,8 @@ async function safeHandleMessage(bot, msg) {
 
 async function safeHandleCallback(bot, q) {
     try {
-        await onCallback(bot, q);
+        const branchId = await getUserBranch(q.from?.id);
+        await runWithBranch(branchId, () => onCallback(bot, q));
     } catch (e) {
         const msg = e?.message || String(e);
         const isNet = msg.includes("ETIMEDOUT") || msg.includes("ECONNRESET") ||

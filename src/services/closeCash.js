@@ -7,17 +7,18 @@ const path = require("path");
 const Sale    = require("../models/Sale");
 const Expense = require("../models/Expense");
 const Debt    = require("../models/Debt");
-const Counter = require("../models/Counter");
 
 const { triggerBackupOnClose } = require("./backupScheduler");
 const { formatMoney }          = require("../utils/money");
 const { startOfToday, formatHM, formatMonthYear } = require("../utils/time");
-const { GROUP_CHAT_ID }        = require("../config");
+const { currentBranch, normBranch, withBranch, branchName, groupFor } = require("./branches");
+const { balanceFor }           = require("./branchData");
 
 // ── Hisobot matni ──────────────────────────────────────
-function buildCloseReportText({ saleSum, expenseSum, debtSum, balance, from, to, tortCount }) {
+function buildCloseReportText({ saleSum, expenseSum, debtSum, balance, from, to, tortCount, branchId }) {
     const pad = "─".repeat(30);
-    let msg = `🔒 <b>KASSA YOPILDI</b>\n`;
+    let msg = `🏪 <b>${branchName(branchId)}</b>\n`;
+    msg += `🔒 <b>KASSA YOPILDI</b>\n`;
     
     // ✅ Eng ishonchli bugungi sana
     msg += `📅 ${formatMonthYear()}\n`;           // dayjs ichida TZ bor
@@ -40,9 +41,9 @@ function buildCloseReportText({ saleSum, expenseSum, debtSum, balance, from, to,
 }
 
 // ── TXT hisobot fayli ──────────────────────────────────
-async function buildReportFile({ sales, expenses, debtsOpen, saleSum, expenseSum, debtSum, balance, from, to }) {
+async function buildReportFile({ sales, expenses, debtsOpen, saleSum, expenseSum, debtSum, balance, from, to, branchId }) {
     const lines = [];
-    lines.push(`KUNLIK HISOBOT (${formatMonthYear(new Date())})`);
+    lines.push(`KUNLIK HISOBOT (${formatMonthYear(new Date())}) — ${branchName(branchId)}`);
     lines.push(`Vaqt: ${formatHM(from)} → ${formatHM(to)}`);
     lines.push("");
     lines.push(`Sotuv: ${formatMoney(saleSum)} so'm`);
@@ -82,37 +83,38 @@ async function buildReportFile({ sales, expenses, debtsOpen, saleSum, expenseSum
 
     const reportDir = path.join(process.cwd(), "reports");
     if (!fs.existsSync(reportDir)) fs.mkdirSync(reportDir, { recursive: true });
-    const fileName = `hisobot_${new Date().toISOString().slice(0, 10)}.txt`;
+    const fileName = `hisobot_${normBranch(branchId)}_${new Date().toISOString().slice(0, 10)}.txt`;
     const filePath = path.join(reportDir, fileName);
     fs.writeFileSync(filePath, lines.join("\n"), "utf8");
     return { filePath, fileName };
 }
 
 // ── Asosiy: hisobot ma'lumotlarini yig'ish ─────────────
-async function closeCashAndMakeReport() {
+// Har filial o'z kassasini alohida yopadi: faqat shu filialning sotuv/chiqim/qarz/balansi.
+async function closeCashAndMakeReport(branchId) {
+    const branch = normBranch(branchId || currentBranch());
     const from = startOfToday();
     const to   = new Date();
 
-    const [sales, expenses, debtsOpen, balance] = await Promise.all([
-        Sale.find({ createdAt: { $gte: from, $lte: to } }).sort({ createdAt: 1 }).lean(),
-        Expense.find({ createdAt: { $gte: from, $lte: to } }).sort({ createdAt: 1 }).lean(),
-        Debt.find({ isClosed: false, kind: "customer" }).sort({ createdAt: -1 }).limit(200).lean(),
-        Counter.findOne({ key: "balance" }).lean(),
+    const [sales, expenses, debtsOpen, bal] = await Promise.all([
+        Sale.find(withBranch({ createdAt: { $gte: from, $lte: to } }, branch)).sort({ createdAt: 1 }).lean(),
+        Expense.find(withBranch({ createdAt: { $gte: from, $lte: to } }, branch)).sort({ createdAt: 1 }).lean(),
+        Debt.find(withBranch({ isClosed: false, kind: "customer" }, branch)).sort({ createdAt: -1 }).limit(200).lean(),
+        balanceFor(branch),
     ]);
 
     const saleSum    = sales.reduce((a, s) => a + (s.paidTotal || 0), 0);
     const expenseSum = expenses.reduce((a, e) => a + (e.amount || 0), 0);
     const debtSum    = debtsOpen.reduce((a, d) => a + (d.remainingDebt || 0), 0);
-    const bal        = balance?.value || 0;
 
     const { filePath, fileName } = await buildReportFile({
         sales, expenses, debtsOpen, saleSum, expenseSum, debtSum,
-        balance: bal, from, to,
+        balance: bal, from, to, branchId: branch,
     });
 
     triggerBackupOnClose().catch(() => {});
 
-    return { saleSum, expenseSum, debtSum, balance: bal, from, to, filePath, fileName };
+    return { saleSum, expenseSum, debtSum, balance: bal, from, to, filePath, fileName, branchId: branch };
 }
 
 // ── Guruhga kassa yopildi + tort qoldiq + rasm/video ───
@@ -122,6 +124,7 @@ async function sendCloseReportToGroup(bot, {
     tortCount,
     media = [],   // [ { type: "photo"|"video_note", fileId } ] max 2
 }) {
+    const GROUP_CHAT_ID = groupFor(summary?.branchId || currentBranch());
     if (!GROUP_CHAT_ID) return;
 
     const msgText = buildCloseReportText({ ...summary, tortCount });

@@ -4,6 +4,7 @@ const dayjs = require("dayjs");
 const Expense = require("../models/Expense");
 const { formatMoney } = require("../utils/money");
 const Sale = require("../models/Sale");
+const { currentBranch, normBranch, withBranch, branchName } = require("./branches");
 
 function getDefaultRange() {
     return {
@@ -42,10 +43,12 @@ function getExpenseCategoryTitle(categoryKey) {
     return map[categoryKey] || categoryKey;
 }
 
-async function getExpenseReportData(from, to, categoryKey = "all") {
-    const query = {
+async function getExpenseReportData(from, to, categoryKey = "all", branchId) {
+    // Faqat shu filialning chiqimlari (berilmasa — joriy filial)
+    const branch = normBranch(branchId || currentBranch());
+    const query = withBranch({
         createdAt: { $gte: from, $lte: to }
-    };
+    }, branch);
 
     if (categoryKey !== "all") {
         query.categoryKey = categoryKey;
@@ -56,6 +59,7 @@ async function getExpenseReportData(from, to, categoryKey = "all") {
     const totalAmount = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
     return {
+        branchId: branch,
         from,
         to,
         categoryKey,
@@ -71,6 +75,7 @@ async function formatExpenseReportText(data) {
     const toStr = dayjs(data.to).format("YYYY.MM.DD");
 
     const lines = [
+        `🏪 <b>${branchName(data.branchId)}</b>`,
         `💸 <b>Chiqimlar hisobot</b>`,
         `📂 Kategoriya: <b>${data.categoryTitle}</b>`,
         `📅 Oraliq: <b>${fromStr}</b> - <b>${toStr}</b>`,
@@ -113,11 +118,11 @@ async function buildExpenseTxtReport(data) {
     const toStr = dayjs(data.to).format("YYYY-MM-DD");
     const cat = data.categoryKey || "all";
 
-    const fileName = `chiqimlar_${cat}_${fromStr}_${toStr}.txt`;
+    const fileName = `chiqimlar_${normBranch(data.branchId)}_${cat}_${fromStr}_${toStr}.txt`;
     const filePath = path.join(reportsDir, fileName);
 
     const lines = [
-        `CHIQIMLAR HISOBOT`,
+        `CHIQIMLAR HISOBOT — ${branchName(data.branchId)}`,
         `Kategoriya: ${data.categoryTitle}`,
         `Oraliq: ${fromStr} - ${toStr}`,
         `Soni: ${data.count}`,
@@ -153,9 +158,9 @@ async function inferWorkerNameForExpense(expense) {
     const from = d.hour(WORKER_NAME_FROM_HOUR).minute(0).second(0).millisecond(0).toDate();
     const to = d.hour(WORKER_NAME_TO_HOUR).minute(0).second(0).millisecond(0).toDate();
 
-    const sales = await Sale.find({
+    const sales = await Sale.find(withBranch({
         createdAt: { $gte: from, $lte: to }
-    }).lean();
+    }, expense.branchId)).lean();
 
     if (!sales.length) {
         return expense.spender?.tgName || "Noma'lum";

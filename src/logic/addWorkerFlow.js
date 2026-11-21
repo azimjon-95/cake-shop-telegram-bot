@@ -56,7 +56,7 @@ async function handleSharedContact(bot, msg) {
         `👤 Ism: <b>${escapeHtml(fullName)}</b>\n` +
         `🆔 TG ID: <code>${tgId}</code>\n` +
         `📞 Tel: ${contact.phone_number || "—"}\n\n` +
-        `Endi u botga /start bosib kira oladi.`,
+        `Endi u botga /start bosib, o'z do'koni PIN-kodini kiritadi.`,
         { parse_mode: "HTML", reply_markup: usersKeyboard() }
     );
     return true;
@@ -104,7 +104,7 @@ async function handleTgIdWorkerAdd(bot, chatId, userId, text) {
         `✅ <b>Qo'shildi!</b>\n\n` +
         `🆔 TG ID: <code>${tgId}</code>\n\n` +
         `Ism keyinroq bot ichida avtomatik yangilanadi.\n` +
-        `Endi u botga /start bosib kira oladi.`,
+        `Endi u botga /start bosib, o'z do'koni PIN-kodini kiritadi.`,
         { parse_mode: "HTML", reply_markup: usersKeyboard() }
     );
     return true;

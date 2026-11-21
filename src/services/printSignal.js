@@ -3,6 +3,7 @@
 // PWA uni olib RawBT orqali Bluetooth printerga chiqaradi
 
 const { WEBAPP_URL } = require("../config");
+const { getBranch, normBranch } = require("./branches");
 
 function fmt(n) { return Number(n||0).toLocaleString("uz-UZ"); }
 
@@ -32,10 +33,12 @@ function buildReceiptText(sale, cashbackBall, qrUrl) {
 
     const lines = [];
 
-    // Header
+    // Header — filial nomi, manzili va telefoni
+    const br = getBranch(sale.branchId);
     lines.push(center("TOTLI TORTLAR"));
-    lines.push(center("Sang'sentir, Anhor minosi"));
-    lines.push(center("+998 77 737 77 40"));
+    lines.push(center(br.name));
+    if (br.address) lines.push(center(br.address));
+    if (br.phone)   lines.push(center(br.phone));
     lines.push(dline);
 
     // Meta
@@ -111,9 +114,14 @@ function emitPrintSignal({ sale, receiptToken }) {
     const receiptText = buildReceiptText(sale, cashbackBall, qrUrl);
 
     // Barcha ulangan PWA larga yuborish
+    const branchId = normBranch(sale.branchId);
+
+    // Barcha PWA larga yuboriladi; har Print Station o'z filialini (?branch=) filtrlab oladi
     global.io.emit("print:receipt", {
+        branchId,
         receiptText,   // RawBT uchun matn
         sale: {
+            branchId,
             orderNo:   sale.orderNo,
             total:     sale.total,
             paidTotal: sale.paidTotal,
@@ -131,7 +139,7 @@ function emitPrintSignal({ sale, receiptToken }) {
         ts:       Date.now(),
     });
 
-    console.log(`[printSignal] emit: #${sale.orderNo} → ${fmt(sale.paidTotal)} som`);
+    console.log(`[printSignal] emit: [${branchId}] #${sale.orderNo} → ${fmt(sale.paidTotal)} som`);
 }
 
 module.exports = { emitPrintSignal, buildReceiptText };

@@ -21,6 +21,7 @@ async function createReceiptTokenIfNeeded({ sale, minPaid = 70000 }) {
         token,
         saleId:    sale._id,
         orderNo:   sale.orderNo,
+        branchId:  sale.branchId || "sang",
         minPaid,
         saleTotal: Number(sale.total    || 0),
         salePaid:  Number(sale.paidTotal || 0),

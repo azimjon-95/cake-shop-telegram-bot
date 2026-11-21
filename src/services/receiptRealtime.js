@@ -3,6 +3,7 @@ const ReceiptToken = require("../models/ReceiptToken");
 const Sale = require("../models/Sale");
 const { makeQrPngBuffer } = require("../services/qr");
 const { CUSTOMER_BOT_USERNAME, MIN_QR_PAID } = require("../config");
+const { getBranch } = require("./branches");
 
 function roomKey(token) {
     return `receipt:${token}`;
@@ -26,6 +27,7 @@ async function buildReceiptPayload(token) {
 
     return {
         sale: { ...sale, deepLink, qrDataUrl },
+        branch: (({ id, name, address, phone }) => ({ id, name, address, phone }))(getBranch(sale.branchId)),
         scansCount: doc.scansCount || 0,
         minPaid: MIN_QR_PAID,
         deepLink,

@@ -5,6 +5,8 @@ const Supplier = require("./models/Supplier");
 const { SALE_TEMPLATE_ITEMS } = require("./logic/saleDraft");
 const { formatMoney } = require("./utils/money");
 const { escapeHtml } = require("./logic/ui");
+const { currentBranch } = require("./services/branches");
+const { supplierDebtOf } = require("./services/branchData");
 
 function monthKeyboard(year) {
     const rows = [];
@@ -66,7 +68,7 @@ function purchaseEntryKeyboard() {
 function menuKeyboard(isAdmin = false) {
     const rows = [
         [{ text: "👥 Foydalanuvchilar" }, { text: "ℹ️ Yordam" }],
-        [{ text: "💸 Chiqimlar hisobot" }],
+        [{ text: "💸 Chiqimlar hisobot" }, { text: "🏪 Filialni almashtirish" }],
     ];
     if (isAdmin) {
         rows.push([{ text: "💰 Balansni tahrirlash" }, { text: "📤 Backup yuborish" }]);
@@ -99,7 +101,10 @@ async function supplierListKeyboard({
     if (onlySuppliers) q.name = { $ne: "📦 Kirim (Taminot)" };
     if (onlyWithDebt) q.debt = { $gt: 0 };
 
-    const suppliers = await Supplier.find(q).sort({ name: 1 });
+    const branch = currentBranch();
+    let suppliers = await Supplier.find(q).sort({ name: 1 });
+    // Qarz — faqat shu filialning o'z qarzi ko'rsatiladi
+    if (onlyWithDebt) suppliers = suppliers.filter(s => supplierDebtOf(s, branch) > 0);
 
     if (suppliers.length === 0) {
         return {
@@ -111,7 +116,7 @@ async function supplierListKeyboard({
     }
 
     const rows = suppliers.map(s => {
-        let t = `🎂 ${s.name} — 💳 ${formatMoney(s.debt || 0)} so'm`;
+        let t = `🎂 ${s.name} — 💳 ${formatMoney(supplierDebtOf(s, branch))} so'm`;
         return [{
             text: escapeHtml(t).slice(0, 64),
             callback_data: `${selectCbPrefix}:${s._id}`

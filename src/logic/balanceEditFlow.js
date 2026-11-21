@@ -4,6 +4,7 @@ const { ADMIN_TG_ID } = require("../config");
 const { getBalance, addBalance } = require("./storage");
 const { redis } = require("../services/auth");
 const { formatMoney } = require("../utils/money");
+const { currentBranch, branchName } = require("../services/branches");
 const { mainMenuKeyboard } = require("../keyboards");
 
 const KEY = (userId) => `bal_edit:${userId}`;
@@ -23,7 +24,7 @@ async function showBalanceEdit(bot, chatId, userId) {
 
     await bot.sendMessage(
         chatId,
-        `💰 <b>Balansni tahrirlash</b>\n\n` +
+        `💰 <b>Balansni tahrirlash</b>\n🏪 Filial: <b>${branchName(currentBranch())}</b>\n\n` +
         `Joriy balans: <b>${formatMoney(balance)}</b> so'm\n\n` +
         `Qanday son yozing:\n` +
         `• <code>500000</code> — aniq qiymat o'rnatish\n` +
@@ -119,7 +120,7 @@ async function _applyBalanceChange(bot, chatId, userId, num, isRelative) {
     const sign = delta >= 0 ? "+" : "";
     await bot.sendMessage(
         chatId,
-        `✅ <b>Balans yangilandi!</b>\n\n` +
+        `✅ <b>Balans yangilandi!</b>\n🏪 <b>${branchName(currentBranch())}</b>\n\n` +
         `📌 Avval: <b>${formatMoney(oldBalance)}</b> so'm\n` +
         `📌 O'zgarish: <b>${sign}${formatMoney(Math.abs(delta))}</b> so'm\n` +
         `💰 <b>Yangi balans: ${formatMoney(newBalance)}</b> so'm`,

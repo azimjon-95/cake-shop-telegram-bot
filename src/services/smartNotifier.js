@@ -11,6 +11,7 @@ const Sale      = require("../models/Sale");
 const Customer  = require("../models/Customer");
 const Debt      = require("../models/Debt");
 const { GROUP_CHAT_ID, BAKER_TG_ID, WEBAPP_URL } = require("../config");
+const { branchIds, withBranch, branchName, groupFor } = require("./branches");
 
 function toMoney(n) { return Number(n||0).toLocaleString("uz-UZ"); }
 function pad(v)     { return String(v).padStart(2,"0"); }
@@ -40,35 +41,8 @@ async function sendDetailedBakerPlan(bot) {
     const from = startOfTashkentDay();
     const to   = new Date(from.getTime() + 86400_000);
 
-    const sales = await Sale.find({ createdAt: { $gte: from, $lte: to } }).lean();
-
-    // Navi bo'yicha hisoblash
-    const navMap = {};
-    let totalTort = 0;
-
-    for (const sale of sales) {
-        for (const it of (sale.items || [])) {
-            const name  = String(it.name || "").trim();
-            const qty   = Number(it.qty || 1);
-            const price = Number(it.price || 0);
-
-            // 60 000 dan yuqori = tort
-            if (price >= 60_000 || /tort|bento/i.test(name)) {
-                navMap[name] = (navMap[name] || 0) + qty;
-                totalTort   += qty;
-            }
-        }
-    }
-
-    // Top 8 navi
-    const sorted = Object.entries(navMap)
-        .sort((a,b) => b[1]-a[1])
-        .slice(0, 8);
-
-    // Bayram tekshirish
     const hint = getUpcomingHoliday();
     const boost = hint ? hint.boost : 1.1;
-    const planBase = Math.max(5, Math.round(totalTort * boost));
 
     let lines = `🍞 <b>ZUBAYDA — ERTANGI REJA</b>\n`;
     lines += `📅 ${pad(tashkentNow().getUTCDate()+1)}.${pad(tashkentNow().getUTCMonth()+1)} uchun\n`;
@@ -79,19 +53,57 @@ async function sendDetailedBakerPlan(bot) {
         lines += `📈 Savdo ×${hint.boost} oshadi\n\n`;
     }
 
-    lines += `📊 Bugun sotildi: <b>${totalTort} ta tort</b>\n\n`;
+    let grandPlan = 0;
 
-    if (sorted.length > 0) {
-        lines += `🎂 <b>Navi bo'yicha reja:</b>\n`;
-        for (const [name, qty] of sorted) {
-            const plan = Math.max(1, Math.round(qty * boost));
-            lines += `  • ${name}: bugun <b>${qty}</b> ta → ertaga <b>${plan}</b> ta\n`;
+    // Har filial uchun alohida blok
+    for (const branch of branchIds()) {
+        const sales = await Sale.find(withBranch({ createdAt: { $gte: from, $lte: to } }, branch)).lean();
+
+        // Navi bo'yicha hisoblash
+        const navMap = {};
+        let totalTort = 0;
+
+        for (const sale of sales) {
+            for (const it of (sale.items || [])) {
+                const name  = String(it.name || "").trim();
+                const qty   = Number(it.qty || 1);
+                const price = Number(it.price || 0);
+
+                // 60 000 dan yuqori = tort
+                if (price >= 60_000 || /tort|bento/i.test(name)) {
+                    navMap[name] = (navMap[name] || 0) + qty;
+                    totalTort   += qty;
+                }
+            }
         }
-    } else {
-        lines += `🎂 Kamida <b>${planBase} ta tort</b> tayyorlang\n`;
+
+        // Top 8 navi
+        const sorted = Object.entries(navMap)
+            .sort((a,b) => b[1]-a[1])
+            .slice(0, 8);
+
+        const planBase = Math.max(5, Math.round(totalTort * boost));
+        grandPlan += sorted.length > 0
+            ? sorted.reduce((acc, [, qty]) => acc + Math.max(1, Math.round(qty * boost)), 0)
+            : planBase;
+
+        lines += `🏪 <b>${branchName(branch)}</b>\n`;
+        lines += `📊 Bugun sotildi: <b>${totalTort} ta tort</b>\n`;
+
+        if (sorted.length > 0) {
+            lines += `🎂 <b>Navi bo'yicha reja:</b>\n`;
+            for (const [name, qty] of sorted) {
+                const plan = Math.max(1, Math.round(qty * boost));
+                lines += `  • ${name}: bugun <b>${qty}</b> ta → ertaga <b>${plan}</b> ta\n`;
+            }
+        } else {
+            lines += `🎂 Kamida <b>${planBase} ta tort</b> tayyorlang\n`;
+        }
+        lines += `\n`;
     }
 
-    lines += `\n⏰ Ertalab <b>08:00</b> gacha tayyor bo'lsin`;
+    lines += `🧮 Jami ertaga: <b>${grandPlan} ta tort</b> (ikkala filial)\n`;
+    lines += `⏰ Ertalab <b>08:00</b> gacha tayyor bo'lsin`;
 
     await bot.sendMessage(BAKER_TG_ID, lines, { parse_mode: "HTML" }).catch(()=>{});
     console.log("[smartNotifier] Baker plan yuborildi");
@@ -149,39 +161,43 @@ async function sendCashbackReminders(bot) {
 // Har kuni 09:00 da — 3 kundan oshgan qarzlar
 // ═══════════════════════════════════════════════════
 async function sendDebtAlerts(bot) {
-    if (!GROUP_CHAT_ID) return;
-
     const threeDaysAgo = new Date(Date.now() - 3*86400_000);
 
-    const oldDebts = await Debt.find({
-        isClosed: false,
-        kind: "customer",
-        createdAt: { $lte: threeDaysAgo }
-    }).sort({ remainingDebt: -1 }).limit(20).lean();
+    for (const branch of branchIds()) {
+        const chatId = groupFor(branch);
+        if (!chatId) continue;
 
-    if (!oldDebts.length) return;
+        const oldDebts = await Debt.find(withBranch({
+            isClosed: false,
+            kind: "customer",
+            createdAt: { $lte: threeDaysAgo }
+        }, branch)).sort({ remainingDebt: -1 }).limit(20).lean();
 
-    const totalOld = oldDebts.reduce((s,d) => s + d.remainingDebt, 0);
+        if (!oldDebts.length) continue;
 
-    let msg = `⚠️ <b>ESLATMA: Uzoq qarzlar</b>\n`;
-    msg += `Jami: <b>${toMoney(totalOld)} so'm</b> (${oldDebts.length} ta)\n`;
-    msg += `──────────────────\n\n`;
+        const totalOld = oldDebts.reduce((s,d) => s + d.remainingDebt, 0);
 
-    for (const d of oldDebts.slice(0, 8)) {
-        const days = Math.floor((Date.now() - new Date(d.createdAt).getTime()) / 86400_000);
-        const phone = d.customerPhone ? `📞 ${d.customerPhone}` : "";
-        msg += `• <b>${toMoney(d.remainingDebt)} so'm</b> — ${days} kun\n`;
-        if (d.note) msg += `  <i>${d.note}</i>\n`;
-        if (phone)  msg += `  ${phone}\n`;
-        msg += "\n";
+        let msg = `🏪 <b>${branchName(branch)}</b>\n`;
+        msg += `⚠️ <b>ESLATMA: Uzoq qarzlar</b>\n`;
+        msg += `Jami: <b>${toMoney(totalOld)} so'm</b> (${oldDebts.length} ta)\n`;
+        msg += `──────────────────\n\n`;
+
+        for (const d of oldDebts.slice(0, 8)) {
+            const days = Math.floor((Date.now() - new Date(d.createdAt).getTime()) / 86400_000);
+            const phone = d.customerPhone ? `📞 ${d.customerPhone}` : "";
+            msg += `• <b>${toMoney(d.remainingDebt)} so'm</b> — ${days} kun\n`;
+            if (d.note) msg += `  <i>${d.note}</i>\n`;
+            if (phone)  msg += `  ${phone}\n`;
+            msg += "\n";
+        }
+
+        if (oldDebts.length > 8) {
+            msg += `<i>...va yana ${oldDebts.length-8} ta</i>`;
+        }
+
+        await bot.sendMessage(chatId, msg, { parse_mode: "HTML" }).catch(()=>{});
+        console.log(`[smartNotifier] Qarz ogohlantirish [${branch}]: ${oldDebts.length} ta`);
     }
-
-    if (oldDebts.length > 8) {
-        msg += `<i>...va yana ${oldDebts.length-8} ta</i>`;
-    }
-
-    await bot.sendMessage(GROUP_CHAT_ID, msg, { parse_mode: "HTML" }).catch(()=>{});
-    console.log(`[smartNotifier] Qarz ogohlantirish: ${oldDebts.length} ta`);
 }
 
 // ═══════════════════════════════════════════════════
@@ -189,27 +205,31 @@ async function sendDebtAlerts(bot) {
 // Agar soat 15:00 gacha savdo 50 000 dan kam bo'lsa
 // ═══════════════════════════════════════════════════
 async function checkLowSales(bot) {
-    if (!GROUP_CHAT_ID) return;
-
     const from = startOfTashkentDay();
     const to   = new Date();
 
-    const agg = await Sale.aggregate([
-        { $match: { createdAt: { $gte: from, $lte: to } } },
-        { $group: { _id: null, total: { $sum: "$paidTotal" }, count: { $sum: 1 } } }
-    ]);
+    for (const branch of branchIds()) {
+        const chatId = groupFor(branch);
+        if (!chatId) continue;
 
-    const total = agg[0]?.total || 0;
-    const count = agg[0]?.count || 0;
+        const agg = await Sale.aggregate([
+            { $match: withBranch({ createdAt: { $gte: from, $lte: to } }, branch) },
+            { $group: { _id: null, total: { $sum: "$paidTotal" }, count: { $sum: 1 } } }
+        ]);
 
-    if (total < 50_000) {
-        await bot.sendMessage(
-            GROUP_CHAT_ID,
-            `📉 <b>Diqqat!</b> Bugun soat 15:00 gacha atigi <b>${toMoney(total)} so'm</b> (${count} ta sotuv).\n\n` +
-            `Faolroq bo'lish vaqti! 💪`,
-            { parse_mode: "HTML" }
-        ).catch(()=>{});
-        console.log("[smartNotifier] Past savdo ogohlantirish yuborildi");
+        const total = agg[0]?.total || 0;
+        const count = agg[0]?.count || 0;
+
+        if (total < 50_000) {
+            await bot.sendMessage(
+                chatId,
+                `🏪 <b>${branchName(branch)}</b>\n` +
+                `📉 <b>Diqqat!</b> Bugun soat 15:00 gacha atigi <b>${toMoney(total)} so'm</b> (${count} ta sotuv).\n\n` +
+                `Faolroq bo'lish vaqti! 💪`,
+                { parse_mode: "HTML" }
+            ).catch(()=>{});
+            console.log(`[smartNotifier] Past savdo ogohlantirish yuborildi [${branch}]`);
+        }
     }
 }
 

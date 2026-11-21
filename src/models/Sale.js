@@ -14,6 +14,8 @@ const SaleItemSchema = new mongoose.Schema(
 const SaleSchema = new mongoose.Schema(
     {
         orderNo: { type: String, index: true }, // ✅ qo‘shildi
+        // Filial: yo'q/null bo'lsa — "sang" (eski ma'lumotlar)
+        branchId: { type: String, default: "sang" },
         seller: {
             tgId: { type: Number, required: true },
             tgName: { type: String, required: true }
@@ -27,6 +29,8 @@ const SaleSchema = new mongoose.Schema(
     },
     { versionKey: false }
 );
+
+SaleSchema.index({ branchId: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Sale", SaleSchema);
 

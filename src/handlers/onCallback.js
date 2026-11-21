@@ -1,5 +1,5 @@
 // src/handlers/onCallback.js
-const { GROUP_CHAT_ID } = require("../config");
+const { currentBranch, sameBranch, groupFor, branchName, normBranch, getBranches } = require("../services/branches");
 
 const Sale = require("../models/Sale");
 const Expense = require("../models/Expense");
@@ -10,7 +10,7 @@ const { makeMonthlyReport } = require("../services/monthlyReport");
 const { payDebt } = require("../services/debtPay");
 const { sendToGroup } = require("../services/notify");
 const { debtPayNotifyText } = require("../utils/report");
-const { redis } = require("../services/auth");
+const { redis, setUserBranch } = require("../services/auth");
 const Worker = require("../models/Worker");
 const { formatMoney } = require("../utils/money");
 const { getUserName, escapeHtml, payAmountKeyboard } = require("../logic/ui");
@@ -115,6 +115,11 @@ async function handleDebtPayAsk(bot, q, chatId) {
         return true;
     }
 
+    if (!sameBranch(debt.branchId, currentBranch())) {
+        await safeAnswer(bot, q, "⛔ Bu qarz boshqa filialga tegishli");
+        return true;
+    }
+
     await bot.sendMessage(
         chatId,
         `📌 Qarz: <b>${escapeHtml(debt.note || "-")}</b>\n` +
@@ -137,6 +142,11 @@ async function handleDebtPayFull(bot, q, chatId, seller) {
 
     if (debt.kind && debt.kind !== "customer") {
         await safeAnswer(bot, q, "Bu bo‘lim faqat mijoz qarzi uchun");
+        return true;
+    }
+
+    if (!sameBranch(debt.branchId, currentBranch())) {
+        await safeAnswer(bot, q, "⛔ Bu qarz boshqa filialga tegishli");
         return true;
     }
 
@@ -179,6 +189,11 @@ async function handleDebtPayPart(bot, q, chatId, fromId) {
         return true;
     }
 
+    if (!sameBranch(debt.branchId, currentBranch())) {
+        await safeAnswer(bot, q, "⛔ Bu qarz boshqa filialga tegishli");
+        return true;
+    }
+
     await redis.set(`await_pay_amount:${fromId}`, debtId, "EX", 300);
     await bot.sendMessage(chatId, "✍️ Qancha to'laysiz? (faqat summa yozing, masalan: 30000)");
     return true;
@@ -187,6 +202,7 @@ async function handleDebtPayPart(bot, q, chatId, fromId) {
 // ===================== MONTH REPORT =====================
 async function editReportMessage(bot, q, rep, year, monthIndex, selectedKeys) {
     const textMsg =
+        `🏪 <b>${branchName(rep.branchId || currentBranch())}</b>\n` +
         `📆 <b>Oylik hisobot: ${rep.monthTitle}</b>\n\n` +
         `📦 Kirim (maxsulot keldi): <b>${formatMoney(rep.purchaseSum)}</b> so'm\n` +
         `🧁 Sotildi (jami savdo): <b>${formatMoney(rep.soldTotal)}</b> so'm\n` +
@@ -219,9 +235,10 @@ async function handleMonthReport(bot, q, chatId, userId) {
         caption: `📄 Batafsil oylik hisobot: ${rep.fileName}`,
     });
 
-    if (GROUP_CHAT_ID) {
-        await bot.sendDocument(GROUP_CHAT_ID, rep.filePath, {
-            caption: `📄 Oylik hisobot (${rep.monthTitle})`,
+    const reportGroup = groupFor(currentBranch());
+    if (reportGroup) {
+        await bot.sendDocument(reportGroup, rep.filePath, {
+            caption: `🏪 ${branchName(currentBranch())}\n📄 Oylik hisobot (${rep.monthTitle})`,
         });
     }
 
@@ -414,6 +431,27 @@ async function onCallback(bot, q) {
 
         if (data === "noop") {
             await safeAnswer(bot, q, "✅");
+            return;
+        }
+
+        // ✅ Admin: filialni almashtirish
+        if (data.startsWith("branch_switch:")) {
+            if (!isAdmin(userId)) { await safeAnswer(bot, q, "⛔ Ruxsat yo'q"); return; }
+            const id = normBranch(data.split(":")[1]);
+            await setUserBranch(userId, id);
+            await safeAnswer(bot, q, `✅ ${branchName(id)}`);
+            const rows = Object.values(getBranches()).map(b => ([{
+                text: (b.id === id ? "✅ " : "") + b.name,
+                callback_data: `branch_switch:${b.id}`,
+            }]));
+            try {
+                await bot.editMessageText(`🏪 Joriy filial: <b>${branchName(id)}</b>\nAlmashtirish:`, {
+                    chat_id: q.message.chat.id,
+                    message_id: q.message.message_id,
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: rows },
+                });
+            } catch { }
             return;
         }
 

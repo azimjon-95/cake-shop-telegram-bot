@@ -5,23 +5,25 @@ const Debt = require("../models/Debt");
 const Counter = require("../models/Counter");
 const { mongoose } = require("../db");
 const { nextOrderNo } = require("../services/orderNo");
+const { currentBranch, normBranch, balanceKey } = require("../services/branches");
 
 // ✅ Balansni atomik o'zgartirish (session bilan yoki sessiyasiz)
-async function addBalance(delta, session) {
+// branchId berilmasa — joriy filial (Sang balansi eski "balance" kalitida)
+async function addBalance(delta, session, branchId) {
     const opts = { new: true, upsert: true };
     if (session) opts.session = session;
 
     const doc = await Counter.findOneAndUpdate(
-        { key: "balance" },
+        { key: balanceKey(branchId || currentBranch()) },
         { $inc: { value: delta } },
         opts
     );
     return doc.value;
 }
 
-// ✅ Balansni olish
-async function getBalance(session) {
-    const doc = await Counter.findOne({ key: "balance" }).session(session || null);
+// ✅ Balansni olish (filial bo'yicha)
+async function getBalance(session, branchId) {
+    const doc = await Counter.findOne({ key: balanceKey(branchId || currentBranch()) }).session(session || null);
     return Number(doc?.value || 0);
 }
 
@@ -50,8 +52,9 @@ function calcSaleTotals(items) {
 }
 
 // ✅ Sotuv saqlash (tranzaksiya ichida)
-async function saveSaleWithTx({ seller, items, phone, noteText }) {
+async function saveSaleWithTx({ seller, items, phone, noteText, branchId }) {
     const session = await mongoose.startSession();
+    const branch = normBranch(branchId || currentBranch());
 
     const run = async () => {
         const { total, paidTotal, debtTotal, change } = calcSaleTotals(items);
@@ -59,6 +62,7 @@ async function saveSaleWithTx({ seller, items, phone, noteText }) {
 
         const sale = (await Sale.create([{
             orderNo,
+            branchId: branch,
             seller,
             phone: phone || null,
             items,
@@ -67,11 +71,12 @@ async function saveSaleWithTx({ seller, items, phone, noteText }) {
             debtTotal
         }], { session }))[0];
 
-        await addBalance(paidTotal, session);
+        await addBalance(paidTotal, session, branch);
 
         let debtDoc = null;
         if (debtTotal > 0) {
             debtDoc = (await Debt.create([{
+                branchId: branch,
                 saleId: sale._id,
                 customerPhone: phone || null,
                 totalDebt: debtTotal,
@@ -97,14 +102,15 @@ async function saveSaleWithTx({ seller, items, phone, noteText }) {
 
 // ✅ Chiqim saqlash — balans tekshiruvi bilan
 // Agar balans yetmasa, error tashlaydi
-async function saveExpenseWithTx({ spender, title, amount, categoryKey, description }) {
+async function saveExpenseWithTx({ spender, title, amount, categoryKey, description, branchId }) {
     if (!amount || amount <= 0) throw new Error("Summa noto'g'ri");
 
     const session = await mongoose.startSession();
+    const branch = normBranch(branchId || currentBranch());
 
     const run = async () => {
-        // ✅ BALANS TEKSHIRUVI
-        const balance = await getBalance(session);
+        // ✅ BALANS TEKSHIRUVI (shu filialning o'z balansi)
+        const balance = await getBalance(session, branch);
         if (balance < amount) {
             throw new Error(`BALANCE_LOW:${balance}`);
         }
@@ -113,6 +119,7 @@ async function saveExpenseWithTx({ spender, title, amount, categoryKey, descript
 
         const expData = {
             orderNo,
+            branchId: branch,
             spender,
             title: title || "Chiqim",
             amount
@@ -121,7 +128,7 @@ async function saveExpenseWithTx({ spender, title, amount, categoryKey, descript
         if (description) expData.description = description;
 
         const exp = (await Expense.create([expData], { session }))[0];
-        await addBalance(-amount, session);
+        await addBalance(-amount, session, branch);
         return exp;
     };
 

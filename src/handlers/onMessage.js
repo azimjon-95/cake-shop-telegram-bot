@@ -31,6 +31,7 @@ const { handleWebAppOrder }  = require("./message/webappOrder");
 const { processSaleInput }   = require("./message/saleMessage");
 const { routeVoiceMessage }  = require("./message/voiceRouter");
 const { handleTopCommands, handlePasswordStep } = require("./message/commands");
+const { currentBranch, sameBranch, withBranch, branchName } = require("../services/branches");
 
 async function onMessage(bot, msg) {
     const chatId     = msg.chat.id;
@@ -159,6 +160,10 @@ async function onMessage(bot, msg) {
         if (!debt) {
             await redis.del(`await_pay_amount:${userId}`);
             return bot.sendMessage(chatId, "❌ Qarz topilmadi.");
+        }
+        if (!sameBranch(debt.branchId, currentBranch())) {
+            await redis.del(`await_pay_amount:${userId}`);
+            return bot.sendMessage(chatId, "⛔ Bu qarz boshqa filialga tegishli.");
         }
 
         const { debt: updated, actualPay } = await payDebt({ debtId: awaitingDebtId, amount, payer });
@@ -326,7 +331,7 @@ async function onMessage(bot, msg) {
     if (text === "📦 Kirim (Taminot)")   return startPurchase(bot, chatId, userId);
 
     if (text === "📌 Qarzlar") {
-        const debts = await Debt.find({ isClosed: false }).sort({ createdAt: -1 }).limit(20).lean();
+        const debts = await Debt.find(withBranch({ isClosed: false }, currentBranch())).sort({ createdAt: -1 }).limit(20).lean();
         if (!debts.length) return bot.sendMessage(chatId, "✅ Ochiq qarzlar yo'q.");
         // ✅ Avval sarlavha, keyin parallel yuborish (N+1 o'rniga Promise.all)
         await bot.sendMessage(chatId, `📌 Ochiq qarzlar: ${debts.length} ta`);
@@ -499,6 +504,18 @@ async function onMessage(bot, msg) {
     }
     if (text === "ℹ️ Yordam") {
         return bot.sendMessage(chatId, helpText(), { parse_mode: "HTML" });
+    }
+    if (text === "🏪 Filialni almashtirish") {
+        // Admin — PIN siz (/filial); xodim — boshqa filial PIN-kodi bilan
+        if (admin) {
+            return bot.sendMessage(chatId, `🏪 Joriy filial: <b>${branchName(currentBranch())}</b>\n\nAlmashtirish uchun /filial yozing.`, { parse_mode: "HTML" });
+        }
+        await setMode(userId, "await_password");
+        return bot.sendMessage(chatId,
+            `🏪 Joriy filial: <b>${branchName(currentBranch())}</b>\n\n` +
+            `Boshqa filialga o'tish uchun o'sha do'kon PIN-kodini kiriting.\nBekor qilish: /tozalash`,
+            { parse_mode: "HTML" }
+        );
     }
     if (text === "📋 Menyu") {
         await bot.sendMessage(chatId, "📋 Qo'shimcha menyu:", { reply_markup: menuKeyboard(admin) });

@@ -20,6 +20,8 @@ const DebtSchema = new mongoose.Schema({
         default: "customer",
         index: true
     },
+    // Filial: yo'q/null bo'lsa — "sang" (eski ma'lumotlar)
+    branchId:      { type: String, default: "sang" },
     saleId:        { type: mongoose.Schema.Types.ObjectId, ref: "Sale",     default: null },
     customerPhone: { type: String, default: null },
     supplierId:    { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", default: null, index: true },
@@ -34,6 +36,7 @@ const DebtSchema = new mongoose.Schema({
 // ✅ Compound indexes — qarz so'rovlar uchun tezlashtirish
 DebtSchema.index({ isClosed: 1, kind: 1 });
 DebtSchema.index({ isClosed: 1, createdAt: -1 });
+DebtSchema.index({ branchId: 1, isClosed: 1, kind: 1 });
 
 const Debt = mongoose.model("Debt", DebtSchema);
 module.exports = Debt;

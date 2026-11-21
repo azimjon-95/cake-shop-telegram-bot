@@ -7,6 +7,8 @@ const WorkerSchema = new mongoose.Schema(
         fullName: { type: String, default: "" },
 
         role: { type: String, default: "worker" },
+        // Qaysi filialda ishlaydi. null = hali PIN kiritmagan (PIN bilan kirgach yoziladi)
+        branchId: { type: String, default: null },
         canUseWebApp: { type: Boolean, default: true },
         isActive: { type: Boolean, default: true }
     },

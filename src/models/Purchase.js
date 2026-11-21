@@ -8,6 +8,8 @@ const PersonSchema = new mongoose.Schema({
 
 const PurchaseSchema = new mongoose.Schema({
     orderNo: { type: String, required: true },
+    // Filial: yo'q/null bo'lsa — "sang" (eski ma'lumotlar)
+    branchId: { type: String, default: "sang" },
 
     supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: true },
 
