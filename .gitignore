@@ -36,3 +36,4 @@ redis-data/
 # package-lock.json
 # yarn.lock
 # pnpm-lock.yaml
+cloudflared.deb

@@ -22,7 +22,6 @@ async function ensurePinnedMiniAppLinkInGroup(bot, forceSend = false) {
     _lastPinCheck = now;
 
     const base     = (WEBAPP_URL || "https://totli-inky.vercel.app").replace(/\/+$/, "");
-    const dashUrl  = base;
     const printUrl = base + "/print";
 
     try {
@@ -40,26 +39,23 @@ async function ensurePinnedMiniAppLinkInGroup(bot, forceSend = false) {
         }
 
         // ── Yangi xabar yuborish ─────────────────────────
-        const d    = new Date(new Date().toLocaleString("en", { timeZone: "Asia/Tashkent" }));
-        const date = `${d.getDate()}.${String(d.getMonth()+1).padStart(2,"0")}.${d.getFullYear()}`;
+        const text = `📈 <b>TOTLI boshqaruv paneliga kirish</b>\n`;
 
-        const text =
-        `📈 <b>TOTLI boshqaruv paneliga kirish</b>\n` ;
+        // Guruhda web_app tugmasi ishlamaydi (faqat private chatda) — oddiy url ishlatiladi.
+        // Dashboard: botning Mini App havolasi; Print Station: to'g'ridan-to'g'ri sayt.
+        let botUsername = "totlisang_bot";
+        try { botUsername = (await bot.getMe())?.username || botUsername; } catch {}
+
+        const inline_keyboard = [
+            [{ text: "📊 Hisobotlar", url: `https://t.me/${botUsername}?startapp` }],
+            [{ text: "🖨 Print Station", url: printUrl }],
+        ];
 
         const sent = await bot.sendMessage(groupId, text, {
-    parse_mode: "HTML",
-    reply_markup: {
-        inline_keyboard: [
-            [
-                {
-                    text: "📊 Hisobotlar",
-                    url: "https://t.me/totlisang_bot?startapp",
-                }
-            ]
-        ]
-    },
-    disable_web_page_preview: true,
-});
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard },
+            disable_web_page_preview: true,
+        });
 
         _sentMessageId = sent.message_id;
         console.log(`📤 [pin] Xabar yuborildi: ${sent.message_id}`);
