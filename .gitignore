@@ -37,3 +37,7 @@ redis-data/
 # yarn.lock
 # pnpm-lock.yaml
 cloudflared.deb
+
+# ovoz namunalari (shaxsiy)
+samples/*.ogg
+samples/cases.json

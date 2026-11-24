@@ -9,7 +9,7 @@ const { expenseCategoryKeyboard, supplierListKeyboard, mainMenuKeyboard } = requ
 const { formatMoney } = require("../utils/money");
 const { getUserName, escapeHtml } = require("../logic/ui");
 const { nextOrderNo } = require("../services/orderNo");
-const { addBalance, getBalance } = require("../logic/storage");
+const { addBalance, getBalance, isDupKey } = require("../logic/storage");
 const { currentBranch } = require("../services/branches");
 const { supplierDebtOf, applySupplierDebtDelta } = require("../services/branchData");
 const { sendToGroup } = require("../services/notify");
@@ -58,7 +58,12 @@ function expenseGroupText(exp) {
     );
 }
 
-async function saveExpenseSafe({ spender, title, amount, categoryKey, description, supplierId }) {
+async function saveExpenseSafe({ spender, title, amount, categoryKey, description, supplierId, idemKey }) {
+    // Idempotentlik: shu kalit bilan chiqim allaqachon bo'lsa — qayta yozilmaydi, balans o'zgarmaydi
+    if (idemKey && (await Expense.findOne({ idemKey }).lean())) {
+        return { ok: false, duplicate: true, reason: "ℹ️ Bu chiqim allaqachon saqlangan." };
+    }
+
     const balance = await getBalance();
     if (balance < amount) {
         return {
@@ -82,15 +87,22 @@ async function saveExpenseSafe({ spender, title, amount, categoryKey, descriptio
         description: description || "",
     };
     if (supplierId) expData.supplierId = supplierId;
+    if (idemKey) expData.idemKey = idemKey;
 
-    const exp = await Expense.create(expData);
+    let exp;
+    try {
+        exp = await Expense.create(expData);
+    } catch (e) {
+        if (idemKey && isDupKey(e)) return { ok: false, duplicate: true, reason: "ℹ️ Bu chiqim allaqachon saqlangan." };
+        throw e;
+    }
     await addBalance(-amount, null, branch);
 
     return { ok: true, exp };
 }
 
 // Firmaga to'lov (matn bilan summa yozilganda ham, ovozdan kelgan summa tasdiqlanganda ham shu yo'l)
-async function paySupplierFromState(bot, chatId, userId, st, amount, fallbackName) {
+async function paySupplierFromState(bot, chatId, userId, st, amount, fallbackName, idemKey) {
     const sup = await Supplier.findById(st.supplierId);
     if (!sup) {
         await redis.del(KEY(userId));
@@ -114,10 +126,12 @@ async function paySupplierFromState(bot, chatId, userId, st, amount, fallbackNam
         amount:      pay,
         categoryKey: "supplier",
         supplierId:  sup._id,
-        description: ""
+        description: "",
+        ...(idemKey ? { idemKey } : {})
     });
 
     if (!result.ok) {
+        if (result.duplicate) await redis.del(KEY(userId));
         await bot.sendMessage(chatId, result.reason, { parse_mode: "HTML" });
         return true;
     }
@@ -145,10 +159,11 @@ async function paySupplierFromState(bot, chatId, userId, st, amount, fallbackNam
 }
 
 // Ovozdan "firma" chiqimi: mavjud tanlash oqimi (pick_supplier) + ovozdan aytilgan summa saqlanadi
-async function startSupplierPickWithAmount(bot, chatId, seller, amount) {
+async function startSupplierPickWithAmount(bot, chatId, seller, amount, idemKey) {
     await redis.set(
         KEY(seller.tgId),
-        JSON.stringify({ step: "pick_supplier", categoryKey: "supplier", createdBy: seller, presetAmount: amount }),
+        JSON.stringify({ step: "pick_supplier", categoryKey: "supplier", createdBy: seller, presetAmount: amount,
+            ...(idemKey ? { presetIdemKey: idemKey } : {}) }),
         "EX", 900
     );
     await bot.sendMessage(chatId,
@@ -235,10 +250,13 @@ async function onExpenseCallback(bot, q, seller) {
         }
 
         // Ovozdan kelgan summa bo'lsa — saqlab qo'yamiz (faqat shu foydalanuvchining pick_supplier holatidan)
-        let preset = 0;
+        let preset = 0, presetIdemKey = null;
         try {
             const prev = JSON.parse((await redis.get(KEY(seller.tgId))) || "null");
-            if (prev?.step === "pick_supplier" && Number(prev.presetAmount) > 0) preset = Number(prev.presetAmount);
+            if (prev?.step === "pick_supplier" && Number(prev.presetAmount) > 0) {
+                preset = Number(prev.presetAmount);
+                presetIdemKey = prev.presetIdemKey || null;
+            }
         } catch { }
 
         await redis.set(
@@ -248,7 +266,8 @@ async function onExpenseCallback(bot, q, seller) {
                 categoryKey: "supplier",
                 supplierId:  String(sup._id),
                 createdBy:   seller,
-                ...(preset ? { presetAmount: preset } : {})
+                ...(preset ? { presetAmount: preset } : {}),
+                ...(presetIdemKey ? { presetIdemKey } : {})
             }),
             "EX", 900
         );
@@ -285,7 +304,7 @@ async function onExpenseCallback(bot, q, seller) {
             await bot.sendMessage(chatId, "⌛ Vaqti o'tgan. Ovozni qayta yuboring.");
             return true;
         }
-        return paySupplierFromState(bot, chatId, seller.tgId, st, Number(st.presetAmount), seller.tgName);
+        return paySupplierFromState(bot, chatId, seller.tgId, st, Number(st.presetAmount), seller.tgName, st.presetIdemKey || null);
     }
 
     return false;
@@ -379,10 +398,12 @@ async function onExpenseMessage(bot, msg) {
             title:       desc,
             amount:      Number(st.amount || 0),
             categoryKey: st.categoryKey,
-            description: desc
+            description: desc,
+            ...(st.idemKey ? { idemKey: st.idemKey } : {})
         });
 
         if (!result.ok) {
+            if (result.duplicate) await redis.del(KEY(userId));
             await bot.sendMessage(chatId, result.reason, { parse_mode: "HTML" });
             return true;
         }

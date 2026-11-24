@@ -1,0 +1,7 @@
+[
+  { "file": "uz_sale_1.ogg", "lang": "uz", "kind": "sale", "expect": { "items": [{ "price": 140000 }, { "price": 5000, "qty": 2 }] } },
+  { "file": "uz_sale_2.ogg", "lang": "uz", "kind": "sale", "expect": { "items": [{ "price": 120000 }] } },
+  { "file": "ru_sale_1.ogg", "lang": "ru", "kind": "sale", "expect": { "items": [{ "price": 140000 }] } },
+  { "file": "uz_chatter.ogg", "lang": "uz", "kind": "sale", "expect": { "items": [] } },
+  { "file": "uz_expense_1.ogg", "lang": "uz", "kind": "expense", "expect": { "categoryKey": "taxi", "amount": 25000 } }
+]

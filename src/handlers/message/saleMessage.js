@@ -49,21 +49,35 @@ async function processSaleInput(bot, msg, rawInputText, seller, opts = {}) {
             );
         }
 
-        return saveParsedSale(bot, chatId, aiParsed, seller);
+        return saveParsedSale(bot, chatId, aiParsed, seller, opts.idemKey);
     }
 
-    return saveParsedSale(bot, chatId, directParsed, seller);
+    return saveParsedSale(bot, chatId, directParsed, seller, opts.idemKey);
 }
 
-async function saveParsedSale(bot, chatId, parsed, seller) {
+async function saveParsedSale(bot, chatId, parsed, seller, idemKey) {
     const itemsText = itemsToText(parsed.items);
 
-    const { sale, debtDoc, change } = await saveSaleWithTx({
-        seller,
-        items: parsed.items,
-        phone: parsed.phone,
-        noteText: itemsText
-    });
+    let saved;
+    try {
+        saved = await saveSaleWithTx({
+            seller,
+            items: parsed.items,
+            phone: parsed.phone,
+            noteText: itemsText,
+            ...(idemKey ? { idemKey } : {})
+        });
+    } catch (e) {
+        // Shu operatsiya allaqachon saqlangan (takroriy update / ikki marta bosish) — qayta yozilmaydi
+        if (e?.code === "DUPLICATE_OPERATION") {
+            await bot.sendMessage(chatId,
+                `ℹ️ Bu sotuv allaqachon saqlangan.` + (e.existing?.orderNo ? `\n🆔 ID: <code>${e.existing.orderNo}</code>` : ""),
+                { parse_mode: "HTML" });
+            return false;
+        }
+        throw e;
+    }
+    const { sale, debtDoc, change } = saved;
 
     const notify = saleNotifyText({
         sellerName: seller.tgName,

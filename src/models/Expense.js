@@ -19,11 +19,14 @@ const ExpenseSchema = new mongoose.Schema({
     // NEW
     categoryKey: { type: String, default: "other" },
     supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", default: null },
-    description: { type: String, default: "" }
+    description: { type: String, default: "" },
+    // Idempotentlik kaliti (ovozli chiqim). Eski yozuvlarda yo'q
+    idemKey: { type: String }
 }, { timestamps: true });
 
 // ✅ createdAt indeksi — dashboard aggregate va filter uchun
 ExpenseSchema.index({ createdAt: 1 });
 ExpenseSchema.index({ branchId: 1, createdAt: -1 });
+ExpenseSchema.index({ idemKey: 1 }, { unique: true, partialFilterExpression: { idemKey: { $type: "string" } } });
 
 module.exports = mongoose.model("Expense", ExpenseSchema);

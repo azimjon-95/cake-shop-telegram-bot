@@ -13,7 +13,8 @@
         "start": "nodemon -L src/index.js",
         "lint": "echo \"Lint yo‘q (ixtiyoriy)\"",
         "health": "node -e \"console.log('OK')\"",
-        "test:voice": "node test/voice.unit.test.js && node test/voice.integration.test.js && node test/expense.supplier.test.js"
+        "voice:check": "node scripts/voice-check.js",
+        "test:voice": "node test/voice.unit.test.js && node test/voice.ffmpeg.test.js && node test/voice.http.test.js && node test/voice.integration.test.js && node test/idempotency.test.js && node test/expense.supplier.test.js"
     },
     "dependencies": {
         "dayjs": "^1.11.19",

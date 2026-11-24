@@ -25,12 +25,16 @@ const SaleSchema = new mongoose.Schema(
         total: { type: Number, required: true }, // qty*price yig‘indi
         paidTotal: { type: Number, required: true }, // real tushgan pul (qarz bo‘lsa kamroq)
         debtTotal: { type: Number, required: true }, // total - paidTotal
-        createdAt: { type: Date, default: Date.now, index: true } // ✅ index
+        createdAt: { type: Date, default: Date.now, index: true }, // ✅ index
+        // Idempotentlik kaliti (masalan "voice:<chatId>:<messageId>"). Faqat yangi yozuvlarda; eski ma'lumotga ta'sir yo'q
+        idemKey: { type: String }
     },
     { versionKey: false }
 );
 
 SaleSchema.index({ branchId: 1, createdAt: -1 });
+// Bitta operatsiya ikki marta yozilmasin (faqat idemKey bor hujjatlar uchun — eski yozuvlar indeksga kirmaydi)
+SaleSchema.index({ idemKey: 1 }, { unique: true, partialFilterExpression: { idemKey: { $type: "string" } } });
 
 module.exports = mongoose.model("Sale", SaleSchema);
 

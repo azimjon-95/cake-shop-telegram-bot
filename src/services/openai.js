@@ -78,43 +78,51 @@ function isReasoningModel(model) {
 }
 
 // Qisqa chat so'rov (sotuv/chiqim normalizatsiyasi). Qaytaradi: matn.
-async function chatText({ system, user, maxOut = 80, deadline, json = false }) {
+// json: true → JSON rejimi; jsonSchema: {name, schema} → Structured Outputs (strict).
+// Model parametrni qo'llamasa (400) — bosqichma-bosqich moslashadi: json_schema → json_object → oddiy.
+async function chatText({ system, user, maxOut = 80, deadline, json = false, jsonSchema = null }) {
     if (!hasKey()) throw new VoiceError("OPENAI_AUTH_FAILED");
     const model = getVoiceConfig().chatModel;
 
-    // Parametrlar modelga qarab; 400 "unsupported parameter" bo'lsa — bir marta moslab qayta urinamiz
     const reasoning = isReasoningModel(model);
     const p = reasoning
         ? { max_completion_tokens: Math.max(600, maxOut * 8) }   // reasoning tokenlar ham shu byudjetdan
         : { temperature: 0, max_tokens: maxOut };
-
-    if (json) p.response_format = { type: "json_object" };   // Structured JSON rejimi (prompt'da "JSON" so'zi bor)
+    if (jsonSchema) p.response_format = { type: "json_schema", json_schema: { name: jsonSchema.name, strict: true, schema: jsonSchema.schema } };
+    else if (json) p.response_format = { type: "json_object" };
 
     const call = () => openai.chat.completions.create({
         model, ...p,
         messages: [{ role: "system", content: system }, { role: "user", content: user }],
-    });
+    }, deadline ? { timeout: Math.max(5000, Math.min(45_000, deadline - Date.now())) } : undefined);
+
+    // 400 "unsupported parameter" bo'lsa parametrni moslaydi. true — o'zgartirildi
+    function adapt(e) {
+        if (Number(e?.status) !== 400) return false;
+        const m = String(e?.message || "").toLowerCase();
+        if (m.includes("max_tokens") && p.max_tokens) { p.max_completion_tokens = Math.max(600, maxOut * 8); delete p.max_tokens; return true; }
+        if (m.includes("max_completion_tokens") && p.max_completion_tokens) { p.max_tokens = maxOut; delete p.max_completion_tokens; return true; }
+        if (m.includes("temperature") && "temperature" in p) { delete p.temperature; return true; }
+        if (/(response_format|json_schema|structured)/.test(m) && p.response_format) {
+            if (p.response_format.type === "json_schema") p.response_format = { type: "json_object" };
+            else delete p.response_format;
+            return true;
+        }
+        return false;
+    }
 
     return withRetry(async () => {
         let resp;
-        try {
-            try {
-                resp = await call();
-            } catch (e) {
-                const m = String(e?.message || "").toLowerCase();
-                if (Number(e?.status) !== 400) throw e;
-                let changed = false;
-                if (m.includes("max_tokens") && p.max_tokens) { p.max_completion_tokens = Math.max(600, maxOut * 8); delete p.max_tokens; changed = true; }
-                else if (m.includes("max_completion_tokens") && p.max_completion_tokens) { p.max_tokens = maxOut; delete p.max_completion_tokens; changed = true; }
-                if (m.includes("temperature") && "temperature" in p) { delete p.temperature; changed = true; }
-                if (m.includes("response_format") && p.response_format) { delete p.response_format; changed = true; }
-                if (!changed) throw e;
-                resp = await call();
+        for (let i = 0; ; i++) {
+            try { resp = await call(); break; }
+            catch (e) {
+                if (i < 4 && adapt(e)) continue;
+                throw mapOpenAiError(e, "ai");
             }
-        } catch (e) {
-            throw mapOpenAiError(e, "ai");
         }
-        return String(resp.choices?.[0]?.message?.content || "").trim();
+        const msg = resp.choices?.[0]?.message || {};
+        if (msg.refusal) throw new VoiceError("AI_INVALID_OUTPUT");
+        return String(msg.content || "").trim();
     }, { deadline });
 }
 

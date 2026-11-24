@@ -209,4 +209,19 @@ test("voice kodlari uchun foydalanuvchi xabarlari bor", () => {
     }
 });
 
+test("expense: Structured Outputs (json_schema strict) → qo'llanmasa json_object → oddiy", async () => {
+    const { normalizeExpenseVoiceText } = require("../src/services/aiExpense");
+    const seen = [];
+    openai.chat.completions.create = async (p) => {
+        seen.push(p.response_format?.type || "none");
+        if (p.response_format?.type === "json_schema") throw Object.assign(new Error("Invalid parameter: 'response_format' of type 'json_schema' is not supported with this model"), { status: 400 });
+        if (p.response_format?.type === "json_object") throw Object.assign(new Error("response_format json_object unsupported"), { status: 400 });
+        return { choices: [{ message: { content: '{"categoryKey":"taxi","amount":25000,"description":""}' } }] };
+    };
+    eq(await normalizeExpenseVoiceText("taksiga 25 ming"), { categoryKey: "taxi", amount: 25000, description: "" });
+    eq(seen, ["json_schema", "json_object", "none"]);
+    openai.chat.completions.create = async (p) => { seen.push(p.response_format.json_schema.strict); return { choices: [{ message: { refusal: "no" } }] }; };
+    await rejectsCode(normalizeExpenseVoiceText("x 5 ming"), "AI_INVALID_OUTPUT", "refusal");
+});
+
 run("VOICE UNIT");

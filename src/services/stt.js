@@ -197,6 +197,24 @@ async function callTranscription(wavPath, opts, cfg, deadline) {
     }, { maxRetries: cfg.maxRetries, deadline });
 }
 
+// Mahalliy audio fayl (allaqachon yuklangan) → WAV → STT. timings va deadline bilan.
+async function convertAndTranscribe(inputPath, dir, opts, cfg, deadline, timings) {
+    if (!looksLikeOgg(inputPath)) throw new VoiceError("FFMPEG_FAILED");   // kutilgan format emas (Telegram voice = Ogg)
+    const wavPath = path.join(dir, "out.wav");
+
+    let t = Date.now();
+    await ffmpegToWav(inputPath, wavPath, cfg);
+    timings.convert = Date.now() - t;
+
+    t = Date.now();
+    const tr = await callTranscription(wavPath, opts, cfg, deadline);
+    timings.stt = Date.now() - t;
+
+    const text = String(tr?.text || "").trim();
+    if (!text) throw new VoiceError("STT_EMPTY_RESULT");
+    return text;
+}
+
 /**
  * Telegram voice → matn.
  * opts: { kind: "sale"|"expense", deadline?: ms epoch, timings?: object (to'ldiriladi) }
@@ -210,26 +228,12 @@ async function transcribeTelegramVoice(bot, fileId, opts = {}) {
 
     const dir = makeRequestDir();
     const oggPath = path.join(dir, "in.ogg");
-    const wavPath = path.join(dir, "out.wav");
 
     try {
-        let t = Date.now();
+        const t = Date.now();
         await withRetry(() => downloadTelegramFile(bot, fileId, oggPath, cfg), { maxRetries: 1, deadline });
         timings.download = Date.now() - t;
-
-        if (!looksLikeOgg(oggPath)) throw new VoiceError("FFMPEG_FAILED");   // kutilgan format emas
-
-        t = Date.now();
-        await ffmpegToWav(oggPath, wavPath, cfg);
-        timings.convert = Date.now() - t;
-
-        t = Date.now();
-        const tr = await callTranscription(wavPath, opts, cfg, deadline);
-        timings.stt = Date.now() - t;
-
-        const text = String(tr?.text || "").trim();
-        if (!text) throw new VoiceError("STT_EMPTY_RESULT");
-        return text;
+        return await convertAndTranscribe(oggPath, dir, opts, cfg, deadline, timings);
     } catch (e) {
         if (e instanceof VoiceError) throw e;
         throw new VoiceError("STT_FAILED", { cause: e });
@@ -238,8 +242,25 @@ async function transcribeTelegramVoice(bot, fileId, opts = {}) {
     }
 }
 
+// Mahalliy .ogg faylni matnga (scripts/voice-check.js — haqiqiy audio bilan aniqlikni baholash uchun)
+async function transcribeLocalFile(filePath, opts = {}) {
+    if (!hasKey()) throw new VoiceError("OPENAI_AUTH_FAILED");
+    const cfg = getVoiceConfig();
+    const deadline = opts.deadline || Date.now() + cfg.processTimeoutMs;
+    const dir = makeRequestDir();
+    try {
+        const inPath = path.join(dir, "in.ogg");
+        fs.copyFileSync(filePath, inPath);
+        if (fs.statSync(inPath).size > cfg.maxFileMb * 1024 * 1024) throw new VoiceError("VOICE_FILE_TOO_LARGE");
+        return await convertAndTranscribe(inPath, dir, opts, cfg, deadline, opts.timings || {});
+    } finally {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch { }
+    }
+}
+
 module.exports = {
     transcribeTelegramVoice,
+    transcribeLocalFile,
     scheduleVoiceTmpCleanup,
     cleanupStaleTmp,
     makeRequestDir,

@@ -37,6 +37,9 @@ const VOICE_TO_DB_KEY = Object.freeze({
 const dbKey = (k) => VOICE_TO_DB_KEY[k] || k;
 
 // ── Yordamchilar ─────────────────────────────────────────
+// Bitta ovozli xabar = bitta moliyaviy operatsiya (DB'da unique idemKey)
+const voiceIdemKey = (msg) => `voice:${msg.chat.id}:${msg.message_id}`;
+
 function esc(x) {
     return String(x ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -294,7 +297,7 @@ async function handleSaleVoice(bot, msg, cfg) {
         timings.validate = Date.now() - t2;
 
         if (!v.ok) {
-            await redis.set(`vsale:${userId}`, JSON.stringify({ text: normalized }), "EX", 300);
+            await redis.set(`vsale:${userId}`, JSON.stringify({ text: normalized, idemKey: voiceIdemKey(msg) }), "EX", 300);
             const lines = v.parsed.items.map(i => `• ${esc(i.name)} ${i.qty > 1 ? i.qty + " ta × " : ""}${formatMoney(i.price)}`).join("\n");
             await safeEdit(bot, chatId, mid,
                 `🤔 <b>Ishonchim komil emas — tasdiqlang</b>\n🎤 <i>${esc(spoken)}</i>\n\n${lines || esc(normalized)}\n\n<i>(${esc(v.reasons.join("; "))})</i>`,
@@ -308,7 +311,8 @@ async function handleSaleVoice(bot, msg, cfg) {
         // 5. Saqlash — faqat mavjud sotuv servisi orqali ("saqlandi" xabarini o'sha servis beradi)
         await safeEdit(bot, chatId, mid, `✅ <b>Tahlil qilindi:</b>\n<code>${esc(normalized)}</code>`);
         const t3 = Date.now();
-        await processSaleInput(bot, msg, normalized, seller, { tryAI: false });   // tryAI:false — AI ikkinchi marta chaqirilmaydi
+        // tryAI:false — AI ikkinchi marta chaqirilmaydi; idemKey — DB darajasida takroriy yozuvdan himoya
+        await processSaleInput(bot, msg, normalized, seller, { tryAI: false, idemKey: voiceIdemKey(msg) });
         timings.save = Date.now() - t3;
         return logTimings("sale", "saved", t0, timings);
 
@@ -323,7 +327,7 @@ async function handleSaleVoice(bot, msg, cfg) {
 
 // ── CHIQIM — ovoz ────────────────────────────────────────
 // Tasdiqlangan/ishonchli chiqimni mavjud servis orqali saqlaydi (callback'dan ham chaqiriladi)
-async function finishVoiceExpense(bot, chatId, userId, spender, data) {
+async function finishVoiceExpense(bot, chatId, userId, spender, data, idemKey) {
     const voiceKey = String(data.categoryKey);
     const amount = Number(data.amount);
     const description = String(data.description || "").trim();
@@ -331,14 +335,14 @@ async function finishVoiceExpense(bot, chatId, userId, spender, data) {
 
     // Firma — mavjud supplier tanlash oqimi (qarzdor firmalar ro'yxati), summa saqlanadi
     if (voiceKey === "supplier") {
-        await startSupplierPickWithAmount(bot, chatId, spender, amount);
+        await startSupplierPickWithAmount(bot, chatId, spender, amount, idemKey);
         return true;
     }
 
     // Tavsif majburiy kategoriya — holat saqlanib, foydalanuvchidan so'raladi (mavjud "desc" qadami)
     if (REQUIRED_DESCRIPTION_CATEGORIES.has(voiceKey) && !description) {
         await redis.set(`exp_state:${userId}`,
-            JSON.stringify({ step: "desc", categoryKey: key, amount, createdBy: spender }), "EX", 900);
+            JSON.stringify({ step: "desc", categoryKey: key, amount, createdBy: spender, ...(idemKey ? { idemKey } : {}) }), "EX", 900);
         await bot.sendMessage(chatId,
             `✏️ <b>${esc(expenseCategoryTitle(voiceKey))}</b> — ${formatMoney(amount)} so'm\n\n` +
             "Qisqa tavsif yozing (masalan: <i>Bodiring, Usta haqi, Material</i>)", { parse_mode: "HTML" });
@@ -348,8 +352,12 @@ async function finishVoiceExpense(bot, chatId, userId, spender, data) {
     const title = expenseCategoryTitle(voiceKey);
     let exp;
     try {
-        exp = await saveExpenseWithTx({ spender, title, amount, categoryKey: key, description });
+        exp = await saveExpenseWithTx({ spender, title, amount, categoryKey: key, description, ...(idemKey ? { idemKey } : {}) });
     } catch (e) {
+        if (e?.code === "DUPLICATE_OPERATION") {
+            await bot.sendMessage(chatId, `ℹ️ Bu chiqim allaqachon saqlangan.` + (e.existing?.orderNo ? `\n🆔 ID: <code>${esc(e.existing.orderNo)}</code>` : ""), { parse_mode: "HTML" });
+            return false;
+        }
         if (String(e?.message || "").startsWith("BALANCE_LOW")) {
             const bal = Number(String(e.message).split(":")[1] || 0);
             await bot.sendMessage(chatId,
@@ -404,7 +412,7 @@ async function handleExpenseVoice(bot, msg, cfg) {
         timings.validate = Date.now() - t2;
 
         if (!v.ok) {
-            await redis.set(`vexp:${userId}`, JSON.stringify({ data }), "EX", 300);
+            await redis.set(`vexp:${userId}`, JSON.stringify({ data, idemKey: voiceIdemKey(msg) }), "EX", 300);
             await safeEdit(bot, chatId, mid,
                 `🤔 <b>Ishonchim komil emas — tasdiqlang</b>\n🎤 <i>${esc(spoken)}</i>\n\n` +
                 `📂 ${esc(expenseCategoryTitle(data.categoryKey))}\n💸 ${formatMoney(data.amount)} so'm` +
@@ -419,7 +427,7 @@ async function handleExpenseVoice(bot, msg, cfg) {
 
         const t3 = Date.now();
         await safeEdit(bot, chatId, mid, `✅ <b>Tahlil qilindi:</b> ${esc(expenseCategoryTitle(data.categoryKey))} — ${formatMoney(data.amount)} so'm`);
-        await finishVoiceExpense(bot, chatId, userId, spender, data);
+        await finishVoiceExpense(bot, chatId, userId, spender, data, voiceIdemKey(msg));
         timings.save = Date.now() - t3;
         return logTimings("expense", "saved", t0, timings);
 
@@ -452,9 +460,9 @@ async function confirmVoicePending(bot, q, seller, kind, accept) {
         if (kind === "sale") {
             // Tasdiqdan keyin ham qayta tekshiruv: parse bo'lmasa saqlanmaydi
             if (!parseSaleMessage(payload.text).items.length) throw new VoiceError("AI_INVALID_OUTPUT");
-            await processSaleInput(bot, q.message, payload.text, seller, { tryAI: false });
+            await processSaleInput(bot, q.message, payload.text, seller, { tryAI: false, idemKey: payload.idemKey });
         } else {
-            await finishVoiceExpense(bot, chatId, userId, seller, payload.data);
+            await finishVoiceExpense(bot, chatId, userId, seller, payload.data, payload.idemKey);
         }
     } catch (e) {
         logVoiceError(`${kind}-confirm`, e);

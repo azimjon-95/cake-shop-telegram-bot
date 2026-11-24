@@ -51,16 +51,32 @@ function calcSaleTotals(items) {
     return { total, paidGiven, paidTotal, debtTotal, change };
 }
 
+// ── Idempotentlik ────────────────────────────────────────
+// Bir xil idemKey bilan ikkinchi yozuv: DUPLICATE_OPERATION (err.existing — avval saqlangan hujjat).
+// Moliyaviy hisob (balans/qarz) faqat birinchi muvaffaqiyatli yozuvda o'zgaradi — tranzaksiya bekor bo'ladi.
+function duplicateError(existing) {
+    const e = new Error("DUPLICATE_OPERATION");
+    e.code = "DUPLICATE_OPERATION";
+    e.existing = existing || null;
+    return e;
+}
+const isDupKey = (e) => e?.code === 11000 || /E11000/.test(String(e?.message || ""));
+
 // ✅ Sotuv saqlash (tranzaksiya ichida)
-async function saveSaleWithTx({ seller, items, phone, noteText, branchId }) {
+async function saveSaleWithTx({ seller, items, phone, noteText, branchId, idemKey }) {
     const session = await mongoose.startSession();
     const branch = normBranch(branchId || currentBranch());
 
     const run = async () => {
+        if (idemKey) {
+            const prev = await Sale.findOne({ idemKey }).session(session).lean();
+            if (prev) throw duplicateError(prev);
+        }
         const { total, paidTotal, debtTotal, change } = calcSaleTotals(items);
         const orderNo = await nextOrderNo(session);
 
         const sale = (await Sale.create([{
+            ...(idemKey ? { idemKey } : {}),
             orderNo,
             branchId: branch,
             seller,
@@ -95,6 +111,9 @@ async function saveSaleWithTx({ seller, items, phone, noteText, branchId }) {
         let out;
         await session.withTransaction(async () => { out = await run(); });
         return out;
+    } catch (e) {
+        if (idemKey && isDupKey(e)) throw duplicateError(await Sale.findOne({ idemKey }).lean());
+        throw e;
     } finally {
         try { session.endSession(); } catch { }
     }
@@ -102,13 +121,17 @@ async function saveSaleWithTx({ seller, items, phone, noteText, branchId }) {
 
 // ✅ Chiqim saqlash — balans tekshiruvi bilan
 // Agar balans yetmasa, error tashlaydi
-async function saveExpenseWithTx({ spender, title, amount, categoryKey, description, branchId }) {
+async function saveExpenseWithTx({ spender, title, amount, categoryKey, description, branchId, idemKey }) {
     if (!amount || amount <= 0) throw new Error("Summa noto'g'ri");
 
     const session = await mongoose.startSession();
     const branch = normBranch(branchId || currentBranch());
 
     const run = async () => {
+        if (idemKey) {
+            const prev = await Expense.findOne({ idemKey }).session(session).lean();
+            if (prev) throw duplicateError(prev);
+        }
         // ✅ BALANS TEKSHIRUVI (shu filialning o'z balansi)
         const balance = await getBalance(session, branch);
         if (balance < amount) {
@@ -126,6 +149,7 @@ async function saveExpenseWithTx({ spender, title, amount, categoryKey, descript
         };
         if (categoryKey) expData.categoryKey = categoryKey;
         if (description) expData.description = description;
+        if (idemKey) expData.idemKey = idemKey;
 
         const exp = (await Expense.create([expData], { session }))[0];
         await addBalance(-amount, session, branch);
@@ -136,9 +160,12 @@ async function saveExpenseWithTx({ spender, title, amount, categoryKey, descript
         let out;
         await session.withTransaction(async () => { out = await run(); });
         return out;
+    } catch (e) {
+        if (idemKey && isDupKey(e)) throw duplicateError(await Expense.findOne({ idemKey }).lean());
+        throw e;
     } finally {
         try { session.endSession(); } catch { }
     }
 }
 
-module.exports = { addBalance, getBalance, saveSaleWithTx, saveExpenseWithTx };
+module.exports = { addBalance, getBalance, saveSaleWithTx, saveExpenseWithTx, isDupKey };
