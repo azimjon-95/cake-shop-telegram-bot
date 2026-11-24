@@ -115,6 +115,22 @@ async function safeDel(...keys) {
     }
 }
 
+// Atomik "bir marta" qulf: key yo'q bo'lsa band qiladi (true), bor bo'lsa false.
+// Redis bo'lsa SET NX EX (parallel instance'larda ham ishlaydi); Redis yo'q bo'lsa RAM (bitta process).
+async function claimOnce(key, ttlSec = 600) {
+    if (redisOk) {
+        try {
+            const r = await redisClient.set(key, "1", "EX", ttlSec, "NX");
+            return r === "OK";
+        } catch {
+            redisOk = false;
+        }
+    }
+    if (mem.get(key) !== null) return false;
+    mem.set(key, "1", "EX", ttlSec);
+    return true;
+}
+
 // ═══════════════════════════════════════════════════════
 // 4. PROXY REDIS — barcha eski redis.get/set/del chaqiruvlari
 //    avtomatik safe wrapper dan o'tadi
@@ -216,6 +232,7 @@ function isRedisAlive() { return redisOk; }
 
 module.exports = {
     redis,          // Proxy — barcha redis.get/set/del safe
+    claimOnce,      // atomik bir martalik qulf (idempotentlik)
     isAuthed,
     setAuthed,
     clearAuthed,

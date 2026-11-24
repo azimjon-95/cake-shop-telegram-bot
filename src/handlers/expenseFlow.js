@@ -3,7 +3,7 @@ const dayjs = require("dayjs");
 
 const Expense = require("../models/Expense");
 const Supplier = require("../models/Supplier");
-const { redis } = require("../services/auth");
+const { redis, claimOnce } = require("../services/auth");
 
 const { expenseCategoryKeyboard, supplierListKeyboard, mainMenuKeyboard } = require("../keyboards");
 const { formatMoney } = require("../utils/money");
@@ -89,6 +89,81 @@ async function saveExpenseSafe({ spender, title, amount, categoryKey, descriptio
     return { ok: true, exp };
 }
 
+// Firmaga to'lov (matn bilan summa yozilganda ham, ovozdan kelgan summa tasdiqlanganda ham shu yo'l)
+async function paySupplierFromState(bot, chatId, userId, st, amount, fallbackName) {
+    const sup = await Supplier.findById(st.supplierId);
+    if (!sup) {
+        await redis.del(KEY(userId));
+        await bot.sendMessage(chatId, "❌ Firma topilmadi.");
+        return true;
+    }
+
+    const remain = supplierDebtOf(sup, currentBranch());
+    if (remain <= 0) {
+        await redis.del(KEY(userId));
+        await bot.sendMessage(chatId, "✅ Bu firmada qarz yo'q.");
+        return true;
+    }
+
+    const pay     = Math.min(amount, remain);
+    const spender = st.createdBy || { tgId: userId, tgName: fallbackName };
+
+    const result = await saveExpenseSafe({
+        spender,
+        title:       `Firma to'lovi: ${sup.name}`,
+        amount:      pay,
+        categoryKey: "supplier",
+        supplierId:  sup._id,
+        description: ""
+    });
+
+    if (!result.ok) {
+        await bot.sendMessage(chatId, result.reason, { parse_mode: "HTML" });
+        return true;
+    }
+
+    applySupplierDebtDelta(sup, currentBranch(), -pay);
+    await sup.save();
+    const supLeft = supplierDebtOf(sup, currentBranch());
+
+    await sendToGroup(bot, expenseGroupText(result.exp));
+    await redis.del(KEY(userId));
+    await bot.sendMessage(
+        chatId,
+        `✅ To'landi: <b>${formatMoney(pay)}</b> so'm\n` +
+        `💳 Firmada qolgan qarz: <b>${formatMoney(supLeft)}</b> so'm`,
+        {
+            parse_mode: "HTML",
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "🗑 O'chirish (Chiqim)", callback_data: `del_exp:${result.exp._id}` }]
+                ]
+            }
+        }
+    );
+    return true;
+}
+
+// Ovozdan "firma" chiqimi: mavjud tanlash oqimi (pick_supplier) + ovozdan aytilgan summa saqlanadi
+async function startSupplierPickWithAmount(bot, chatId, seller, amount) {
+    await redis.set(
+        KEY(seller.tgId),
+        JSON.stringify({ step: "pick_supplier", categoryKey: "supplier", createdBy: seller, presetAmount: amount }),
+        "EX", 900
+    );
+    await bot.sendMessage(chatId,
+        `🏷 <b>Firma (Ta'minot)</b> — ovozdan: <b>${formatMoney(amount)}</b> so'm\n🏭 Qarzdorlik mavjud firmalar:`,
+        {
+            parse_mode: "HTML",
+            reply_markup: await supplierListKeyboard({
+                onlyWithDebt:   true,
+                selectCbPrefix: "exp_sup_select",
+                backCb:         "exp_cancel"
+            })
+        }
+    );
+}
+
 async function startExpense(bot, chatId, userId) {
     await redis.set(KEY(userId), JSON.stringify({ step: "pick_category" }), "EX", 900);
     const balance = await getBalance();
@@ -159,13 +234,21 @@ async function onExpenseCallback(bot, q, seller) {
             return true;
         }
 
+        // Ovozdan kelgan summa bo'lsa — saqlab qo'yamiz (faqat shu foydalanuvchining pick_supplier holatidan)
+        let preset = 0;
+        try {
+            const prev = JSON.parse((await redis.get(KEY(seller.tgId))) || "null");
+            if (prev?.step === "pick_supplier" && Number(prev.presetAmount) > 0) preset = Number(prev.presetAmount);
+        } catch { }
+
         await redis.set(
             KEY(seller.tgId),
             JSON.stringify({
                 step:        "supplier_pay_amount",
                 categoryKey: "supplier",
                 supplierId:  String(sup._id),
-                createdBy:   seller
+                createdBy:   seller,
+                ...(preset ? { presetAmount: preset } : {})
             }),
             "EX", 900
         );
@@ -176,10 +259,33 @@ async function onExpenseCallback(bot, q, seller) {
             `🏭 Firma: <b>${escapeHtml(sup.name)}</b>\n` +
             `💳 Firma qarzi: <b>${formatMoney(remain)}</b> so'm\n` +
             `🏦 Kassa balansi: <b>${formatMoney(balance)}</b> so'm\n` +
-            `✍️ Qancha to'laysiz?`,
-            { parse_mode: "HTML" }
+            (preset
+                ? `🎤 Ovozdan summa: <b>${formatMoney(preset)}</b> so'm — tasdiqlang yoki boshqa summa yozing`
+                : `✍️ Qancha to'laysiz?`),
+            {
+                parse_mode: "HTML",
+                ...(preset ? { reply_markup: { inline_keyboard: [[
+                    { text: `✅ ${formatMoney(preset)} so'm to'lash`, callback_data: "exp_sup_preset" },
+                    { text: "❌ Bekor", callback_data: "exp_cancel" },
+                ]] } } : {})
+            }
         );
         return true;
+    }
+
+    // 🎤 Ovozdan aytilgan summani tasdiqlash (ikki marta bosilsa — bir marta to'lanadi)
+    if (data === "exp_sup_preset") {
+        const claimed = await claimOnce(`exp_sup_preset:${chatId}:${q.message.message_id}`, 600);
+        if (!claimed) return true;
+        try { await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: q.message.message_id }); } catch { }
+
+        let st = null;
+        try { st = JSON.parse((await redis.get(KEY(seller.tgId))) || "null"); } catch { }
+        if (!st || st.step !== "supplier_pay_amount" || !(Number(st.presetAmount) > 0)) {
+            await bot.sendMessage(chatId, "⌛ Vaqti o'tgan. Ovozni qayta yuboring.");
+            return true;
+        }
+        return paySupplierFromState(bot, chatId, seller.tgId, st, Number(st.presetAmount), seller.tgName);
     }
 
     return false;
@@ -304,57 +410,7 @@ async function onExpenseMessage(bot, msg) {
             await bot.sendMessage(chatId, "❌ Summa noto'g'ri. Masalan: 100000");
             return true;
         }
-
-        const sup = await Supplier.findById(st.supplierId);
-        if (!sup) {
-            await redis.del(KEY(userId));
-            await bot.sendMessage(chatId, "❌ Firma topilmadi.");
-            return true;
-        }
-
-        const remain = supplierDebtOf(sup, currentBranch());
-        if (remain <= 0) {
-            await redis.del(KEY(userId));
-            await bot.sendMessage(chatId, "✅ Bu firmada qarz yo'q.");
-            return true;
-        }
-
-        const pay     = Math.min(amount, remain);
-        const spender = st.createdBy || { tgId: userId, tgName: getUserName(msg) };
-
-        const result = await saveExpenseSafe({
-            spender,
-            title:       `Firma to'lovi: ${sup.name}`,
-            amount:      pay,
-            categoryKey: "supplier",
-            supplierId:  sup._id,
-            description: ""
-        });
-
-        if (!result.ok) {
-            await bot.sendMessage(chatId, result.reason, { parse_mode: "HTML" });
-            return true;
-        }
-
-        applySupplierDebtDelta(sup, currentBranch(), -pay);
-        await sup.save();
-        const supLeft = supplierDebtOf(sup, currentBranch());
-
-        await sendToGroup(bot, expenseGroupText(result.exp));
-        await redis.del(KEY(userId));
-        await bot.sendMessage(
-            chatId,
-            `✅ To'landi: <b>${formatMoney(pay)}</b> so'm\n` +
-            `💳 Firmada qolgan qarz: <b>${formatMoney(supLeft)}</b> so'm`,
-            {
-                parse_mode: "HTML",
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "🗑 O'chirish (Chiqim)", callback_data: `del_exp:${result.exp._id}` }]
-                    ]
-                }
-            }
-        );
+        await paySupplierFromState(bot, chatId, userId, st, amount, getUserName(msg));
         return true;
     }
 
@@ -365,5 +421,6 @@ module.exports = {
     startExpense,
     onExpenseMessage,
     onExpenseCallback,
+    startSupplierPickWithAmount,
     REQUIRED_DESCRIPTION_CATEGORIES
 };

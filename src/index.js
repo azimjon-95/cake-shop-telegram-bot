@@ -13,6 +13,8 @@ const { TZ, BOT_TOKEN, CUSTOMER_BOT_TOKEN, REDIS_URL, PORT, WEBAPP_URL } = requi
 const { webappRoutes } = require("./routes/webapp");
 const { createRealtime } = require("./services/realtime");
 const { validateBranchConfig } = require("./services/branches");
+const { validateVoiceConfig } = require("./services/voiceConfig");
+const { scheduleVoiceTmpCleanup } = require("./services/stt");
 const { createDashboardRealtime } = require("./services/dashboardRealtime");
 const { createReceiptRealtime } = require("./services/receiptRealtime");
 const dns = require("dns");
@@ -43,6 +45,8 @@ async function safe(name, fn) {
         // ✅ DB — kritik
         await connectDb();
         validateBranchConfig(); // PIN_TODA / PIN_SANG sozlamalari haqida ogohlantirish
+        validateVoiceConfig();  // VOICE_* / OPENAI_* qiymatlari tekshiruvi (xato bo'lsa xavfsiz default + ogohlantirish)
+        scheduleVoiceTmpCleanup(); // eski vaqtinchalik audio fayllarni tozalash
 
         const app = express();
         app.use(express.json({ limit: "1mb" }));

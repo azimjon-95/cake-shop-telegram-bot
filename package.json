@@ -12,7 +12,8 @@
         "dev": "nodemon -L src/index.js",
         "start": "nodemon -L src/index.js",
         "lint": "echo \"Lint yo‘q (ixtiyoriy)\"",
-        "health": "node -e \"console.log('OK')\""
+        "health": "node -e \"console.log('OK')\"",
+        "test:voice": "node test/voice.unit.test.js && node test/voice.integration.test.js && node test/expense.supplier.test.js"
     },
     "dependencies": {
         "dayjs": "^1.11.19",

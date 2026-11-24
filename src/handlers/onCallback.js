@@ -434,17 +434,10 @@ async function onCallback(bot, q) {
             return;
         }
 
-        // 🎤 Ovozli sotuv tasdig'i
-        if (data === "vsale_ok" || data === "vsale_no") {
-            const key = `vsale:${userId}`;
-            const raw = await redis.get(key);
-            await redis.del(key);                       // ikki marta bosilsa — ikki marta saqlanmasin
-            await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: msg.message_id }).catch(() => {});
-            if (data === "vsale_no") { await bot.sendMessage(chatId, "❌ Bekor qilindi."); return; }
-            if (!raw) { await bot.sendMessage(chatId, "⌛ Vaqti o'tgan. Ovozni qayta yuboring."); return; }
-            const { text } = JSON.parse(raw);
-            const { processSaleInput } = require("./message/saleMessage");
-            await processSaleInput(bot, msg, text, seller, { tryAI: false });
+        // 🎤 Ovozli sotuv/chiqim tasdig'i (bir marta ishlaydi, qayta tekshiruv bilan)
+        if (data === "vsale_ok" || data === "vsale_no" || data === "vexp_ok" || data === "vexp_no") {
+            const { confirmVoicePending } = require("./message/voiceRouter");
+            await confirmVoicePending(bot, q, seller, data.startsWith("vsale") ? "sale" : "expense", data.endsWith("_ok"));
             return;
         }
 

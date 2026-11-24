@@ -5,10 +5,19 @@
 const UNITS = { bir: 1, bitta: 1, ikki: 2, ikkita: 2, uch: 3, uchta: 3, tort4: 4, besh: 5, beshta: 5, olti: 6, yetti: 7, sakkiz: 8, toqqiz: 9 };
 const TENS = { on: 10, yigirma: 20, ottiz: 30, qirq: 40, ellik: 50, oltmish: 60, yetmish: 70, sakson: 80, toqson: 90 };
 
+// Rus tili (STT ruscha yozib qo'yishi mumkin)
+const RU_UNITS = { один: 1, одна: 1, одну: 1, два: 2, две: 2, три: 3, четыре: 4, пять: 5, шесть: 6, семь: 7, восемь: 8, девять: 9,
+    десять: 10, одиннадцать: 11, двенадцать: 12, тринадцать: 13, четырнадцать: 14, пятнадцать: 15, шестнадцать: 16, семнадцать: 17, восемнадцать: 18, девятнадцать: 19,
+    двадцать: 20, тридцать: 30, сорок: 40, пятьдесят: 50, шестьдесят: 60, семьдесят: 70, восемьдесят: 80, девяносто: 90,
+    сто: 100, двести: 200, триста: 300, четыреста: 400, пятьсот: 500, шестьсот: 600, семьсот: 700, восемьсот: 800, девятьсот: 900 };
+const RU_THOUSAND = /^(тысяча|тысячи|тысяч|тыс)$/;
+const RU_MILLION = /^(миллион|миллиона|миллионов|млн)$/;
+
 function norm(s) {
     return String(s || "").toLowerCase()
         .replace(/['‘’`ʻʼ]/g, "")          // to'rt → tort, o'n → on
-        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/ё/g, "е")
+        .replace(/[^a-z0-9а-я\s]/g, " ")
         .replace(/\s+/g, " ").trim();
 }
 
@@ -60,6 +69,9 @@ function spokenAmountsOnce(text, tortIsFour) {
         }
         if (/^(million|mln|milyon)/.test(t)) { total += (group || 1) * 1e6; group = 0; has = true; hadMing = true; continue; }
         if (t === "yuz") { group = (group === 0 ? 1 : group) * 100; has = true; continue; }
+        if (RU_UNITS[t]) { group += RU_UNITS[t]; has = true; continue; }
+        if (RU_THOUSAND.test(t)) { total += (group || 1) * 1000; group = 0; has = true; hadMing = true; continue; }
+        if (RU_MILLION.test(t)) { total += (group || 1) * 1e6; group = 0; has = true; hadMing = true; continue; }
         const w = wordValue(t, next, tortIsFour);
         if (w) { group += w.unit; has = true; continue; }
         flush();

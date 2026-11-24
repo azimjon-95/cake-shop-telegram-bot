@@ -1,84 +1,155 @@
+// src/services/stt.js
+// Telegram voice → (bounded download) → FFmpeg WAV → OpenAI transcription.
+// Xavfsizlik: token log'ga chiqmaydi, har request o'z temp papkasida, finally'da tozalanadi,
+// yuklash hajm/vaqt bilan cheklangan, ffmpeg execFile (shell yo'q) + timeout.
+
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execFile } = require("child_process");
 const { BOT_TOKEN } = require("../config");
-const { openai } = require("./openai");
+const { openai, VoiceError, mapOpenAiError, withRetry, hasKey } = require("./openai");
+const { getVoiceConfig } = require("./voiceConfig");
 
-function ensureTmpDir() {
-    const dir = path.join(process.cwd(), "tmp");
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    return dir;
+const TMP_BASE = path.join(os.tmpdir(), "totli-voice");
+const STALE_MS = 30 * 60 * 1000;
+const ALLOWED_EXT = new Set([".oga", ".ogg", ".opus", ".mp3", ".m4a", ".wav", ".webm"]);
+
+// ── Yordamchilar ────────────────────────────────────────
+// Log/xabarlardan bot tokenini olib tashlash
+function redact(s) {
+    let out = String(s ?? "");
+    if (BOT_TOKEN) out = out.split(BOT_TOKEN).join("***");
+    return out.replace(/bot\d{6,}:[\w-]{20,}/g, "bot***");
 }
 
-async function downloadFile(url, outPath) {
-    const res = await fetch(url);
-    if (!res.ok) {
-        throw new Error(`TELEGRAM_DOWNLOAD_FAILED:${res.status}`);
+function ensureTmpBase() {
+    fs.mkdirSync(TMP_BASE, { recursive: true, mode: 0o700 });
+    return TMP_BASE;
+}
+
+// Faqat TMP_BASE ichidagi eski (30 daqiqadan) fayl/papkalarni o'chiradi (crash'dan qolganlar)
+function cleanupStaleTmp(now = Date.now()) {
+    let removed = 0;
+    try {
+        for (const name of fs.readdirSync(TMP_BASE)) {
+            const p = path.join(TMP_BASE, name);
+            try {
+                const st = fs.lstatSync(p);                       // symlink'ni kuzatmaymiz
+                if (now - st.mtimeMs > STALE_MS) { fs.rmSync(p, { recursive: true, force: true }); removed++; }
+            } catch { /* keyingisiga */ }
+        }
+    } catch { /* papka hali yo'q */ }
+    return removed;
+}
+
+let _cleanTimer = null;
+function scheduleVoiceTmpCleanup() {
+    if (_cleanTimer) return;
+    ensureTmpBase();
+    cleanupStaleTmp();
+    _cleanTimer = setInterval(() => cleanupStaleTmp(), 10 * 60 * 1000);
+    if (_cleanTimer.unref) _cleanTimer.unref();
+}
+
+// Har request uchun noyob papka (parallel requestlar to'qnashmaydi)
+function makeRequestDir() {
+    ensureTmpBase();
+    return fs.mkdtempSync(path.join(TMP_BASE, "v-"));
+}
+
+// ── 1. Telegram'dan cheklangan yuklash ───────────────────
+async function downloadTelegramFile(bot, fileId, destPath, cfg) {
+    const maxBytes = Math.floor(cfg.maxFileMb * 1024 * 1024);
+
+    let file;
+    try {
+        file = await bot.getFile(fileId);
+    } catch (e) {
+        const m = String(e?.message || "").toLowerCase();
+        if (m.includes("too big")) throw new VoiceError("VOICE_FILE_TOO_LARGE");
+        throw new VoiceError("TELEGRAM_FILE_UNAVAILABLE", { cause: e });
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(outPath, buf);
+
+    const fp = String(file?.file_path || "");
+    if (!fp || fp.includes("..") || !/^[\w\-./]+$/.test(fp))
+        throw new VoiceError("TELEGRAM_FILE_UNAVAILABLE");
+    if (!ALLOWED_EXT.has(path.extname(fp).toLowerCase()))
+        throw new VoiceError("TELEGRAM_FILE_UNAVAILABLE");
+    if (file.file_size && Number(file.file_size) > maxBytes)
+        throw new VoiceError("VOICE_FILE_TOO_LARGE");
+
+    const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fp}`;   // log'ga HECH QACHON chiqarilmaydi
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), cfg.downloadTimeoutMs);
+
+    try {
+        const res = await fetch(url, { signal: ac.signal });
+        if (!res.ok) throw new VoiceError("TELEGRAM_DOWNLOAD_FAILED", { retryable: res.status >= 500 });
+        const len = Number(res.headers.get("content-length") || 0);
+        if (len && len > maxBytes) throw new VoiceError("VOICE_FILE_TOO_LARGE");
+        if (!res.body) throw new VoiceError("TELEGRAM_DOWNLOAD_FAILED");
+
+        const out = fs.createWriteStream(destPath, { mode: 0o600 });
+        let total = 0;
+        try {
+            for await (const chunk of res.body) {                  // oqim: RAM'ga to'liq olinmaydi
+                total += chunk.length;
+                if (total > maxBytes) throw new VoiceError("VOICE_FILE_TOO_LARGE");
+                if (!out.write(chunk)) await new Promise(r => out.once("drain", r));
+            }
+        } finally {
+            await new Promise(r => out.end(r));
+        }
+        if (total === 0) throw new VoiceError("TELEGRAM_FILE_UNAVAILABLE");
+        return total;
+    } catch (e) {
+        if (e instanceof VoiceError) throw e;
+        if (e?.name === "AbortError") throw new VoiceError("TELEGRAM_DOWNLOAD_FAILED", { retryable: true });
+        throw new VoiceError("TELEGRAM_DOWNLOAD_FAILED", { retryable: true });
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
-function getFfmpegPath() {
-    return process.env.FFMPEG_PATH || "ffmpeg";
+// Faylning boshi: Telegram voice = Ogg ("OggS")
+function looksLikeOgg(filePath) {
+    try {
+        const fd = fs.openSync(filePath, "r");
+        const b = Buffer.alloc(4);
+        fs.readSync(fd, b, 0, 4, 0);
+        fs.closeSync(fd);
+        return b.toString("latin1") === "OggS";
+    } catch { return false; }
 }
 
-function ffmpegToWav(input, output) {
+// ── 2. FFmpeg ────────────────────────────────────────────
+function ffmpegToWav(input, output, cfg) {
     return new Promise((resolve, reject) => {
-        const ffmpegBin = getFfmpegPath();
-
-        console.log("FFMPEG BIN:", ffmpegBin);
-        console.log("FFMPEG INPUT:", input);
-        console.log("FFMPEG OUTPUT:", output);
-
         execFile(
-            ffmpegBin,
-            ["-y", "-i", input, "-ar", "16000", "-ac", "1", output],
-            (err, stdout, stderr) => {
+            cfg.ffmpegPath,
+            ["-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", input, "-t", String(cfg.maxSec + 5),
+                "-ar", "16000", "-ac", "1", "-f", "wav", output],
+            { timeout: cfg.ffmpegTimeoutMs, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 },
+            (err, _stdout, stderr) => {
                 if (err) {
-                    console.error("FFMPEG ERROR OBJECT:", err);
-                    console.error("FFMPEG STDERR:", stderr);
-                    console.error("FFMPEG STDOUT:", stdout);
-
-                    if (err.code === "ENOENT") {
-                        return reject(new Error("FFMPEG_NOT_INSTALLED"));
-                    }
-
-                    return reject(new Error("FFMPEG_FAILED"));
+                    if (err.code === "ENOENT") return reject(new VoiceError("FFMPEG_NOT_INSTALLED"));
+                    if (err.killed || err.signal) return reject(new VoiceError("FFMPEG_TIMEOUT"));
+                    console.error("[voice] ffmpeg xato kodi:", err.code, redact(String(stderr || "").slice(0, 300)));
+                    return reject(new VoiceError("FFMPEG_FAILED"));
                 }
-
+                try {
+                    if (fs.statSync(output).size <= 44) return reject(new VoiceError("FFMPEG_FAILED")); // WAV sarlavhasidan kichik = bo'sh
+                } catch { return reject(new VoiceError("FFMPEG_FAILED")); }
                 resolve();
             }
         );
     });
 }
 
-function safeDelete(filePath) {
-    try {
-        fs.unlinkSync(filePath);
-    } catch (_) { }
-}
-
-function mapOpenAiError(err) {
-    const msg = String(err?.message || "").toLowerCase();
-    const status = err?.status || err?.code || 0;
-
-    if (status === 401 || msg.includes("incorrect api key") || msg.includes("invalid_api_key")) {
-        return new Error("OPENAI_AUTH_FAILED");
-    }
-
-    if (status === 429 || msg.includes("quota") || msg.includes("rate limit") || msg.includes("insufficient_quota")) {
-        return new Error("OPENAI_QUOTA_OR_LIMIT");
-    }
-
-    if (status === 500 || status === 502 || status === 503 || status === 504 || msg.includes("timeout")) {
-        return new Error("OPENAI_TEMP_UNAVAILABLE");
-    }
-
-    return new Error("OPENAI_STT_FAILED");
-}
-
-// Sotuv ovozi uchun tayanch matn: mahsulot nomlari va "ming" aytilishi — raqam/nom aniqroq chiqadi
+// ── 3. STT ───────────────────────────────────────────────
+// Sotuv ovozi uchun tayanch matn (OpenAI hujjatidagi `prompt` maydoni): mahsulot nomlari va pul iboralari
 function saleHintPrompt() {
     try {
         const { SALE_TEMPLATE_ITEMS } = require("../logic/saleDraft");
@@ -87,58 +158,91 @@ function saleHintPrompt() {
     } catch { return undefined; }
 }
 
-async function transcribeTelegramVoice(bot, fileId, opts = {}) {
-    if (!process.env.OPENAI_API_KEY) {
-        throw new Error("OPENAI_API_KEY_MISSING");
+async function callTranscription(wavPath, opts, cfg, deadline) {
+    const base = { model: cfg.sttModel };
+    if (cfg.sttLanguage) base.language = cfg.sttLanguage;           // ISO-639-1 (hujjatlashtirilgan `language`)
+    if (opts.kind === "sale") {
+        const hint = saleHintPrompt();
+        if (hint) base.prompt = hint;
     }
 
-    const file = await bot.getFile(fileId);
-    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    return withRetry(async () => {
+        const timeout = Math.max(5000, Math.min(60_000, deadline - Date.now()));
+        // Har urinishda yangi stream. error handler + destroy: fayl o'chirilganda (cleanup) handle'siz
+        // 'error' event butun processni yiqitmasligi uchun.
+        const run = async (params) => {
+            const stream = fs.createReadStream(wavPath);
+            stream.on("error", () => { });
+            try {
+                return await openai.audio.transcriptions.create({ ...params, file: stream }, { timeout });
+            } finally {
+                stream.destroy();
+            }
+        };
+        try {
+            try {
+                return await run(base);
+            } catch (e) {
+                // language/prompt sababli 400 bo'lsa — ularsiz bir marta qayta urinish
+                const m = String(e?.message || "").toLowerCase();
+                if (Number(e?.status) === 400 && (base.language || base.prompt) && /(language|prompt)/.test(m)) {
+                    const { language, prompt, ...plain } = base;
+                    return await run(plain);
+                }
+                throw e;
+            }
+        } catch (e) {
+            throw mapOpenAiError(e, "stt");
+        }
+    }, { maxRetries: cfg.maxRetries, deadline });
+}
 
-    const tmpDir = ensureTmpDir();
-    const oggPath = path.join(tmpDir, `${fileId}.ogg`);
-    const wavPath = path.join(tmpDir, `${fileId}.wav`);
+/**
+ * Telegram voice → matn.
+ * opts: { kind: "sale"|"expense", deadline?: ms epoch, timings?: object (to'ldiriladi) }
+ * Xato: VoiceError (.code). Bo'sh natija: VoiceError("STT_EMPTY_RESULT").
+ */
+async function transcribeTelegramVoice(bot, fileId, opts = {}) {
+    if (!hasKey()) throw new VoiceError("OPENAI_AUTH_FAILED");
+    const cfg = getVoiceConfig();
+    const deadline = opts.deadline || Date.now() + cfg.processTimeoutMs;
+    const timings = opts.timings || {};
+
+    const dir = makeRequestDir();
+    const oggPath = path.join(dir, "in.ogg");
+    const wavPath = path.join(dir, "out.wav");
 
     try {
-        await downloadFile(fileUrl, oggPath);
-        await ffmpegToWav(oggPath, wavPath);
+        let t = Date.now();
+        await withRetry(() => downloadTelegramFile(bot, fileId, oggPath, cfg), { maxRetries: 1, deadline });
+        timings.download = Date.now() - t;
 
-        const params = { model: "gpt-4o-mini-transcribe" };
-        const lang = process.env.STT_LANGUAGE === undefined ? "uz" : process.env.STT_LANGUAGE;
-        if (lang) params.language = lang;
-        if (opts.kind === "sale") {
-            const hint = saleHintPrompt();
-            if (hint) params.prompt = hint;
-        }
+        if (!looksLikeOgg(oggPath)) throw new VoiceError("FFMPEG_FAILED");   // kutilgan format emas
 
-        let tr;
-        try {
-            tr = await openai.audio.transcriptions.create({ ...params, file: fs.createReadStream(wavPath) });
-        } catch (e) {
-            // Til/prompt qo'llab-quvvatlanmasa — oddiy rejimda qayta urinamiz
-            if (e?.status === 400 && (params.language || params.prompt)) {
-                delete params.language; delete params.prompt;
-                tr = await openai.audio.transcriptions.create({ ...params, file: fs.createReadStream(wavPath) });
-            } else throw e;
-        }
+        t = Date.now();
+        await ffmpegToWav(oggPath, wavPath, cfg);
+        timings.convert = Date.now() - t;
 
-        return String(tr?.text || "").trim();
-    } catch (err) {
-        if (
-            String(err?.message || "").startsWith("OPENAI_") ||
-            String(err?.message || "").startsWith("TELEGRAM_") ||
-            String(err?.message || "").startsWith("FFMPEG_")
-        ) {
-            throw err;
-        }
+        t = Date.now();
+        const tr = await callTranscription(wavPath, opts, cfg, deadline);
+        timings.stt = Date.now() - t;
 
-        throw mapOpenAiError(err);
+        const text = String(tr?.text || "").trim();
+        if (!text) throw new VoiceError("STT_EMPTY_RESULT");
+        return text;
+    } catch (e) {
+        if (e instanceof VoiceError) throw e;
+        throw new VoiceError("STT_FAILED", { cause: e });
     } finally {
-        safeDelete(oggPath);
-        safeDelete(wavPath);
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* cleanup sekin bo'lsa ham asosiy oqim buzilmasin */ }
     }
 }
 
 module.exports = {
-    transcribeTelegramVoice
+    transcribeTelegramVoice,
+    scheduleVoiceTmpCleanup,
+    cleanupStaleTmp,
+    makeRequestDir,
+    redact,
+    TMP_BASE,
 };
